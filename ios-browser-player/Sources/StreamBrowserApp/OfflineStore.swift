@@ -5,6 +5,7 @@ import Foundation
 struct OfflineVideo: Codable, Identifiable, Hashable {
     enum Status: String, Codable {
         case downloading
+        case converting
         case completed
         case failed
     }
@@ -41,11 +42,15 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
 
 @MainActor
 final class OfflineStore: NSObject, ObservableObject {
+    private static let backgroundSessionIdentifier = "com.example.StreamBrowser.offline-assets"
+    static weak var shared: OfflineStore?
+
     private enum DownloadError: LocalizedError {
         case unsupportedVideoFormat
         case mp4ExportUnavailable
         case exportFailed
         case hlsTaskCreationFailed
+        case interrupted
 
         var errorDescription: String? {
             switch self {
@@ -57,6 +62,8 @@ final class OfflineStore: NSObject, ObservableObject {
                 return "La conversion de la vidéo en MP4 a échoué."
             case .hlsTaskCreationFailed:
                 return "Le téléchargement HLS n’a pas pu démarrer. Vérifiez que le lien est encore valide."
+            case .interrupted:
+                return "Le téléchargement a été interrompu avant sa finalisation."
             }
         }
     }
@@ -67,15 +74,18 @@ final class OfflineStore: NSObject, ObservableObject {
     private let fileManager = FileManager.default
     private let stateFileName = "offline-videos.json"
     private var assetTasks: [Int: UUID] = [:]
+    private var backgroundCompletionHandler: (() -> Void)?
 
     override init() {
         super.init()
+        Self.shared = self
         loadState()
+        restoreBackgroundTasks()
     }
 
     private lazy var configuredAssetSession: AVAssetDownloadURLSession = {
         let configuration = URLSessionConfiguration.background(
-            withIdentifier: "com.example.StreamBrowser.offline-assets"
+            withIdentifier: Self.backgroundSessionIdentifier
         )
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
@@ -111,6 +121,19 @@ final class OfflineStore: NSObject, ObservableObject {
             return nil
         }
         return URL(fileURLWithPath: localPath)
+    }
+
+    func handleBackgroundEvents(
+        for identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == Self.backgroundSessionIdentifier else {
+            completionHandler()
+            return
+        }
+
+        backgroundCompletionHandler = completionHandler
+        _ = configuredAssetSession
     }
 
     func remove(_ video: OfflineVideo) {
@@ -228,9 +251,27 @@ final class OfflineStore: NSObject, ObservableObject {
         }
     }
 
-    private func finish(item: OfflineVideo, localURL: URL) {
-        update(item: item, status: .completed, localPath: localURL.path)
+    private func finish(
+        item: OfflineVideo,
+        localURL: URL,
+        note: String? = nil
+    ) {
+        update(
+            item: item,
+            status: .completed,
+            localPath: localURL.path,
+            errorMessage: note
+        )
         progress[item.id] = 1
+    }
+
+    private func markConverting(item: OfflineVideo, packageURL: URL) {
+        update(
+            item: item,
+            status: .converting,
+            localPath: packageURL.path
+        )
+        progress[item.id] = 0.98
     }
 
     private func fail(item: OfflineVideo, error: Error? = nil) {
@@ -271,6 +312,18 @@ final class OfflineStore: NSObject, ObservableObject {
         applicationSupportDirectory.appendingPathComponent("OfflineVideos", isDirectory: true)
     }
 
+    private func hlsPackageURL(for id: UUID) -> URL {
+        offlineDirectory
+            .appendingPathComponent(id.uuidString)
+            .appendingPathExtension("movpkg")
+    }
+
+    private func mp4URL(for id: UUID) -> URL {
+        offlineDirectory
+            .appendingPathComponent(id.uuidString)
+            .appendingPathExtension("mp4")
+    }
+
     private var stateURL: URL {
         applicationSupportDirectory.appendingPathComponent(stateFileName)
     }
@@ -283,13 +336,54 @@ final class OfflineStore: NSObject, ObservableObject {
         }
 
         videos = savedVideos.compactMap { video in
-            guard video.status == .completed,
-                  let localPath = video.localPath,
-                  fileManager.fileExists(atPath: localPath)
-            else {
-                return nil
+            switch video.status {
+            case .completed, .converting:
+                guard let localPath = video.localPath,
+                      fileManager.fileExists(atPath: localPath)
+                else {
+                    return nil
+                }
+            case .downloading, .failed:
+                break
             }
             return video
+        }
+
+        for video in videos {
+            switch video.status {
+            case .downloading:
+                progress[video.id] = 0
+            case .converting:
+                progress[video.id] = 0.98
+            case .completed, .failed:
+                break
+            }
+        }
+    }
+
+    private func restoreBackgroundTasks() {
+        configuredAssetSession.getAllTasks { tasks in
+            let taskIDs = tasks.reduce(into: [Int: UUID]()) { result, task in
+                guard let assetTask = task as? AVAssetDownloadTask,
+                      let id = assetTask.taskDescription.flatMap(UUID.init(uuidString:))
+                else {
+                    return
+                }
+                result[assetTask.taskIdentifier] = id
+            }
+
+            Task { @MainActor in
+                self.assetTasks = taskIDs
+                let activeIDs = Set(taskIDs.values)
+
+                for video in self.videos where video.status == .downloading {
+                    guard activeIDs.contains(video.id) else {
+                        self.fail(item: video, error: DownloadError.interrupted)
+                        continue
+                    }
+                    self.progress[video.id] = 0
+                }
+            }
         }
     }
 
@@ -323,28 +417,58 @@ extension OfflineStore: AVAssetDownloadDelegate {
         assetDownloadTask: AVAssetDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        guard let id = assetDownloadTask.taskDescription.flatMap(UUID.init(uuidString:)) else { return }
+        let taskIdentifier = assetDownloadTask.taskIdentifier
+        let taskDescription = assetDownloadTask.taskDescription
+
         Task { @MainActor in
+            guard let id = self.id(
+                from: taskDescription,
+                taskIdentifier: taskIdentifier
+            ),
+            let item = self.videos.first(where: { $0.id == id })
+            else {
+                return
+            }
+
             do {
-                let destination = self.offlineDirectory
-                    .appendingPathComponent(id.uuidString)
-                    .appendingPathExtension("mp4")
+                // AVAssetDownloadURLSession gives us a temporary .movpkg
+                // directory. It must be moved before the delegate returns or
+                // iOS may remove it after the background task completes.
+                let packageURL = self.hlsPackageURL(for: id)
                 try self.fileManager.createDirectory(
                     at: self.offlineDirectory,
                     withIntermediateDirectories: true
                 )
-                try await self.exportToMP4(
-                    sourceURL: location,
-                    destinationURL: destination
-                )
+                try? self.fileManager.removeItem(at: packageURL)
+                try self.fileManager.moveItem(at: location, to: packageURL)
 
-                guard let item = self.videos.first(where: { $0.id == id }) else { return }
-                self.finish(item: item, localURL: destination)
-                self.assetTasks[assetDownloadTask.taskIdentifier] = nil
-            } catch {
-                if let item = self.videos.first(where: { $0.id == id }) {
-                    self.fail(item: item, error: error)
+                // Mark the download as usable immediately. Conversion is a
+                // second step and must never leave the offline row stuck at
+                // "downloading" if an iOS export preset rejects this HLS.
+                self.markConverting(item: item, packageURL: packageURL)
+
+                do {
+                    let destination = self.mp4URL(for: id)
+                    try await self.exportToMP4(
+                        sourceURL: packageURL,
+                        destinationURL: destination
+                    )
+                    try? self.fileManager.removeItem(at: packageURL)
+                    self.finish(item: item, localURL: destination)
+                } catch {
+                    // The downloaded HLS package is still a valid offline
+                    // AVPlayer asset, so keep it instead of reporting a
+                    // failed download when MP4 conversion is unavailable.
+                    self.finish(
+                        item: item,
+                        localURL: packageURL,
+                        note: "Vidéo disponible hors ligne (format HLS local)."
+                    )
                 }
+
+                self.assetTasks[taskIdentifier] = nil
+            } catch {
+                self.fail(item: item, error: error)
             }
         }
     }
@@ -356,9 +480,9 @@ extension OfflineStore: AVAssetDownloadDelegate {
         totalTimeRangesLoaded loadedTimeRanges: [NSValue],
         timeRangeExpectedToLoad: CMTimeRange
     ) {
-        guard let id = assetDownloadTask.taskDescription.flatMap(UUID.init(uuidString:)),
-              timeRangeExpectedToLoad.duration.seconds > 0
-        else {
+        let taskIdentifier = assetDownloadTask.taskIdentifier
+        let taskDescription = assetDownloadTask.taskDescription
+        guard timeRangeExpectedToLoad.duration.seconds > 0 else {
             return
         }
 
@@ -369,7 +493,12 @@ extension OfflineStore: AVAssetDownloadDelegate {
         let nextProgress = min(max(loaded / expected, 0), 0.99)
 
         Task { @MainActor in
-            self.progress[id] = nextProgress
+            if let id = self.id(
+                from: taskDescription,
+                taskIdentifier: taskIdentifier
+            ) {
+                self.progress[id] = nextProgress
+            }
         }
     }
 
@@ -378,17 +507,40 @@ extension OfflineStore: AVAssetDownloadDelegate {
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
-        guard let id = task.taskDescription.flatMap(UUID.init(uuidString:)),
-              let error
-        else {
+        guard let error else {
             return
         }
+        let taskIdentifier = task.taskIdentifier
+        let taskDescription = task.taskDescription
 
         Task { @MainActor in
-            if let item = self.videos.first(where: { $0.id == id }) {
-                self.fail(item: item, error: error)
+            guard let id = self.id(
+                from: taskDescription,
+                taskIdentifier: taskIdentifier
+            ),
+            let item = self.videos.first(where: { $0.id == id }),
+            item.status != .completed
+            else {
+                return
             }
+
+            self.fail(item: item, error: error)
         }
-        _ = error
+    }
+
+    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        Task { @MainActor in
+            let completionHandler = self.backgroundCompletionHandler
+            self.backgroundCompletionHandler = nil
+            completionHandler?()
+        }
+    }
+
+    private func id(from taskDescription: String?, taskIdentifier: Int) -> UUID? {
+        if let taskDescription,
+           let id = UUID(uuidString: taskDescription) {
+            return id
+        }
+        return assetTasks[taskIdentifier]
     }
 }

@@ -609,13 +609,22 @@ private struct OfflineVideoRow: View {
 
                     switch video.status {
                     case .completed:
-                        Label("Disponible hors ligne", systemImage: "checkmark.circle.fill")
+                        Label(
+                            video.errorMessage ?? "Disponible hors ligne",
+                            systemImage: "checkmark.circle.fill"
+                        )
                             .font(.caption)
                             .foregroundStyle(.mint)
                     case .downloading:
                         ProgressView(value: progress)
                             .tint(.indigo)
                         Text(progress > 0 ? "\(Int(progress * 100)) %" : "Téléchargement en cours…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    case .converting:
+                        ProgressView(value: progress)
+                            .tint(.indigo)
+                        Text("Conversion en MP4…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     case .failed:
