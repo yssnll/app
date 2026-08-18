@@ -3,15 +3,23 @@ import SwiftUI
 private enum AppTab: Hashable {
     case browser
     case player
+    case offline
 }
 
 struct ContentView: View {
     @EnvironmentObject private var browserStore: BrowserStore
+    @EnvironmentObject private var offlineStore: OfflineStore
     @State private var addressText = ""
     @State private var currentWebURL: URL?
     @State private var currentStreamURL: URL?
     @State private var selectedTab: AppTab = .browser
     @State private var showingHistory = false
+    @State private var showingDownloadOptions = false
+    @State private var pendingDownloadURL: URL?
+    @State private var availableQualities: [VideoQuality] = []
+    @State private var isResolvingQualities = false
+    @State private var downloadError: String?
+    @State private var selectedOfflineVideo: OfflineVideo?
 
     var body: some View {
         ZStack {
@@ -29,6 +37,12 @@ struct ContentView: View {
                         Label("Lecteur", systemImage: "play.rectangle")
                     }
                     .tag(AppTab.player)
+
+                offlineTab
+                    .tabItem {
+                        Label("Hors ligne", systemImage: "arrow.down.circle")
+                    }
+                    .tag(AppTab.offline)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbarBackground(.visible, for: .tabBar)
@@ -44,6 +58,22 @@ struct ContentView: View {
                 openInput(item.url)
             }
             .environmentObject(browserStore)
+        }
+        .sheet(isPresented: $showingDownloadOptions, onDismiss: clearDownloadSelection) {
+            DownloadOptionsView(
+                url: pendingDownloadURL,
+                qualities: availableQualities,
+                isLoading: isResolvingQualities,
+                errorMessage: downloadError,
+                onSelect: { quality in
+                    offlineStore.startDownload(quality, title: title(for: quality.url))
+                    showingDownloadOptions = false
+                    selectedTab = .offline
+                }
+            )
+        }
+        .sheet(item: $selectedOfflineVideo) { video in
+            OfflinePlayerSheet(video: video, localURL: offlineStore.localURL(for: video))
         }
     }
 
@@ -61,7 +91,10 @@ struct ContentView: View {
                     .padding(.bottom, 10)
 
                     if let currentWebURL {
-                        BrowserView(url: currentWebURL)
+                        BrowserView(
+                            url: currentWebURL,
+                            onLinkLongPress: beginDownload(for:)
+                        )
                             .id(currentWebURL.absoluteString)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Color.black)
@@ -169,6 +202,55 @@ struct ContentView: View {
         }
     }
 
+    private var offlineTab: some View {
+        NavigationStack {
+            ZStack {
+                AppBackground()
+
+                if offlineStore.videos.isEmpty {
+                    EmptyStateView(
+                        title: "Aucune vidéo hors ligne",
+                        systemName: "arrow.down.circle",
+                        description: "Faites un appui long sur un lien vidéo dans le navigateur pour choisir une qualité et la télécharger."
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(offlineStore.videos) { video in
+                                OfflineVideoRow(
+                                    video: video,
+                                    progress: offlineStore.progress[video.id] ?? 0,
+                                    onOpen: {
+                                        guard offlineStore.localURL(for: video) != nil else { return }
+                                        selectedOfflineVideo = video
+                                    },
+                                    onDelete: {
+                                        offlineStore.remove(video)
+                                    }
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
+                    .scrollIndicators(.hidden)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle("Hors ligne")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 8) {
+                        BrandMark(size: 28)
+                        Text("Hors ligne")
+                            .font(.headline)
+                    }
+                }
+            }
+        }
+    }
+
     private func openInput(_ input: String) {
         guard let url = browserStore.resolveInput(input) else { return }
         browserStore.addToHistory(url)
@@ -180,6 +262,43 @@ struct ContentView: View {
             currentWebURL = url
             selectedTab = .browser
         }
+    }
+
+    private func beginDownload(for url: URL) {
+        pendingDownloadURL = url
+        availableQualities = []
+        downloadError = nil
+        showingDownloadOptions = true
+
+        guard browserStore.isVideo(url) else {
+            downloadError = "Ce lien ne pointe pas directement vers une vidéo compatible. Utilisez un lien .m3u8, .mp4, .mov ou .m4v."
+            return
+        }
+
+        isResolvingQualities = true
+        Task {
+            do {
+                let qualities = try await VideoQualityResolver.resolve(for: url)
+                guard pendingDownloadURL == url else { return }
+                availableQualities = qualities
+            } catch {
+                guard pendingDownloadURL == url else { return }
+                downloadError = error.localizedDescription
+            }
+            isResolvingQualities = false
+        }
+    }
+
+    private func clearDownloadSelection() {
+        pendingDownloadURL = nil
+        availableQualities = []
+        isResolvingQualities = false
+        downloadError = nil
+    }
+
+    private func title(for url: URL) -> String {
+        let name = url.deletingPathExtension().lastPathComponent
+        return name.isEmpty ? "Vidéo téléchargée" : name.replacingOccurrences(of: "-", with: " ")
     }
 }
 
@@ -338,6 +457,225 @@ private struct HistoryView: View {
                 }
             }
         }
+    }
+}
+
+private struct DownloadOptionsView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let url: URL?
+    let qualities: [VideoQuality]
+    let isLoading: Bool
+    let errorMessage: String?
+    let onSelect: (VideoQuality) -> Void
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AppBackground()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Télécharger la vidéo", systemImage: "arrow.down.circle.fill")
+                                .font(.title2.weight(.bold))
+
+                            if let url {
+                                Text(url.absoluteString)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(3)
+                                    .textSelection(.enabled)
+                            }
+                        }
+
+                        if isLoading {
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                Text("Recherche des qualités disponibles…")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 32)
+                        } else if let errorMessage {
+                            VStack(spacing: 12) {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.system(size: 30))
+                                    .foregroundStyle(.orange)
+                                Text(errorMessage)
+                                    .font(.subheadline)
+                                    .multilineTextAlignment(.center)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 22)
+                        } else {
+                            Text("Choisissez une qualité")
+                                .font(.headline)
+
+                            ForEach(qualities) { quality in
+                                Button {
+                                    onSelect(quality)
+                                } label: {
+                                    HStack(spacing: 14) {
+                                        Image(systemName: "film")
+                                            .font(.title3)
+                                            .foregroundStyle(.indigo)
+                                            .frame(width: 34, height: 34)
+                                            .background(Color.indigo.opacity(0.16), in: Circle())
+
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(quality.label)
+                                                .font(.headline)
+                                                .foregroundStyle(.primary)
+                                            Text(quality.detail)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+
+                                        Spacer()
+                                        Image(systemName: "arrow.down.circle.fill")
+                                            .font(.title3)
+                                            .foregroundStyle(.indigo)
+                                    }
+                                    .padding(14)
+                                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(20)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .navigationTitle("Téléchargement")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Fermer") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct OfflineVideoRow: View {
+    let video: OfflineVideo
+    let progress: Double
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.indigo.opacity(0.85), Color.purple.opacity(0.85)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    Image(systemName: video.status == .completed ? "play.fill" : "arrow.down")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 58, height: 58)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(video.title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+
+                    Text(video.qualityLabel)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.indigo)
+
+                    switch video.status {
+                    case .completed:
+                        Label("Disponible hors ligne", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.mint)
+                    case .downloading:
+                        ProgressView(value: progress)
+                            .tint(.indigo)
+                        Text(progress > 0 ? "\(Int(progress * 100)) %" : "Téléchargement en cours…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    case .failed:
+                        Label("Échec du téléchargement", systemImage: "exclamationmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                if video.status == .completed {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(video.status != .completed)
+        .contextMenu {
+            Button("Supprimer", role: .destructive, action: onDelete)
+        }
+    }
+}
+
+private struct OfflinePlayerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let video: OfflineVideo
+    let localURL: URL?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                if let localURL {
+                    HLSPlayerView(url: localURL)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    EmptyStateView(
+                        title: "Vidéo indisponible",
+                        systemName: "exclamationmark.triangle",
+                        description: "Le fichier local n’est plus disponible."
+                    )
+                }
+            }
+            .navigationTitle(video.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Fermer") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 

@@ -1,7 +1,8 @@
 # Stream Browser iOS
 
 Application iOS native en SwiftUI permettant de rechercher sur le web, d'ouvrir des
-liens dans un navigateur intégré et de lire des flux vidéo HLS `.m3u8`.
+liens dans un navigateur intégré, de lire des flux vidéo HLS `.m3u8` et de conserver
+des vidéos pour les regarder hors ligne.
 
 ## iOS & GitHub
 
@@ -24,15 +25,23 @@ liens dans un navigateur intégré et de lire des flux vidéo HLS `.m3u8`.
 - `ios-browser-player/Sources/StreamBrowserApp/ContentView.swift` — navigation,
   recherche, navigateur et historique
 - `ios-browser-player/Sources/StreamBrowserApp/BrowserView.swift` — navigateur web
-  intégré avec `WKWebView`
+  intégré avec `WKWebView` et détection de l'appui long sur les liens vidéo
 - `ios-browser-player/Sources/StreamBrowserApp/HLSPlayerView.swift` — lecteur HLS
-  avec `AVPlayer`
+  avec `AVPlayer`, y compris les fichiers locaux
+- `ios-browser-player/Sources/StreamBrowserApp/VideoQuality.swift` — lecture des
+  playlists HLS et détection des qualités disponibles
+- `ios-browser-player/Sources/StreamBrowserApp/OfflineStore.swift` — téléchargements
+  locaux HLS/fichiers vidéo et persistance des vidéos hors ligne
 - `ios-browser-player/ci/ExportOptions.plist` — options d'export de l'IPA
 
 ## Architecture decisions
 
 - Les recherches sans URL sont envoyées vers DuckDuckGo.
 - Les liens dont l'extension est `.m3u8` sont ouverts dans le lecteur AVPlayer.
+- Un appui long sur un lien `.m3u8`, `.mp4`, `.mov`, `.m4v` ou `.webm` ouvre le
+  choix de qualité avant le téléchargement.
+- Les playlists HLS sont téléchargées avec `AVAssetDownloadURLSession` afin de
+  conserver leurs segments et de pouvoir les lire sans réseau.
 - Les URLs temporaires ne sont pas stockées dans le code source : elles sont collées
   par l'utilisateur et peuvent apparaître dans l'historique local.
 - L'IPA du workflow est volontairement non signée : elle sert à empaqueter le build,
@@ -41,7 +50,8 @@ liens dans un navigateur intégré et de lire des flux vidéo HLS `.m3u8`.
 ## Product
 
 Stream Browser offre une barre unique pour rechercher, naviguer et lancer des flux
-HLS directs, avec historique local et partage du lien du flux actif.
+HLS directs, avec historique local, partage du lien actif et bibliothèque « Hors
+ligne » pour les vidéos téléchargées.
 
 ## User preferences
 

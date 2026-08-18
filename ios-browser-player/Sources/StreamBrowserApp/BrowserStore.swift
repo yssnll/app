@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 struct HistoryItem: Codable, Identifiable, Hashable {
     let id: UUID
@@ -54,6 +55,11 @@ final class BrowserStore: ObservableObject {
     func isHLS(_ url: URL) -> Bool {
         let pathExtension = url.pathExtension.lowercased()
         return configuration.hlsExtensions.contains(pathExtension)
+    }
+
+    func isVideo(_ url: URL) -> Bool {
+        let videoExtensions = ["m3u8", "mp4", "mov", "m4v", "webm"]
+        return videoExtensions.contains(url.pathExtension.lowercased())
     }
 
     func addToHistory(_ url: URL) {
