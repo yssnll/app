@@ -7,15 +7,20 @@ struct AppConfiguration: Decodable {
     let hlsExtensions: [String]
 
     static let current: AppConfiguration = {
-        guard let url = Bundle.main.url(forResource: "app-config", withExtension: "json") else {
-            fatalError("The bundled app-config.json file is missing.")
+        let defaults = AppConfiguration(
+            appName: "Stream Browser",
+            searchEngineURL: "https://duckduckgo.com/?q=",
+            supportedSchemes: ["http", "https"],
+            hlsExtensions: ["m3u8"]
+        )
+
+        guard let url = Bundle.main.url(forResource: "app-config", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let configuration = try? JSONDecoder().decode(AppConfiguration.self, from: data)
+        else {
+            return defaults
         }
 
-        do {
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode(AppConfiguration.self, from: data)
-        } catch {
-            fatalError("The bundled app-config.json file is invalid: \(error.localizedDescription)")
-        }
+        return configuration
     }()
 }
