@@ -14,10 +14,12 @@ targets:
     deploymentTarget: "16.0"
     sources:
       - path: Sources/StreamBrowserApp
-    resources:
       - path: Resources/app-config.json
+        buildPhase: resources
       - path: Resources/Assets.xcassets
+        buildPhase: resources
       - path: Resources/LaunchScreen.storyboard
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.StreamBrowser
