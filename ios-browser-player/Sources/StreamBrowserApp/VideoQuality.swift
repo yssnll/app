@@ -119,7 +119,10 @@ enum VideoQualityResolver {
                 let value = $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 return !value.isEmpty && !value.hasPrefix("#")
             }),
-            let variantURL = URL(string: variantLine.trimmingCharacters(in: .whitespacesAndNewlines), relativeTo: url)?.absoluteURL
+            let variantURL = inheritedQueryURL(
+                for: variantLine.trimmingCharacters(in: .whitespacesAndNewlines),
+                relativeTo: url
+            )
             else {
                 continue
             }
@@ -157,6 +160,29 @@ enum VideoQualityResolver {
 
             return ($0.bitrate ?? 0) > ($1.bitrate ?? 0)
         }
+    }
+
+    private static func inheritedQueryURL(for value: String, relativeTo baseURL: URL) -> URL? {
+        guard let resolvedURL = URL(string: value, relativeTo: baseURL)?.absoluteURL else {
+            return nil
+        }
+
+        // Signed HLS links commonly put the access token on the master playlist
+        // only, while the variant playlist is a relative URL. URL resolution
+        // does not inherit the query string, so AVFoundation would request the
+        // variant without t/s/e (and the server would leave the download idle).
+        guard resolvedURL.query == nil,
+              let inheritedQuery = baseURL.query,
+              var components = URLComponents(
+                url: resolvedURL,
+                resolvingAgainstBaseURL: false
+              )
+        else {
+            return resolvedURL
+        }
+
+        components.query = inheritedQuery
+        return components.url ?? resolvedURL
     }
 
     private static func detectContentType(for url: URL) async throws -> String? {

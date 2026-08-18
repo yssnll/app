@@ -16,6 +16,7 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
     let qualityLabel: String
     let downloadedAt: Date
     let status: Status
+    let errorMessage: String?
 
     init(
         id: UUID = UUID(),
@@ -24,7 +25,8 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
         localPath: String? = nil,
         qualityLabel: String,
         downloadedAt: Date = Date(),
-        status: Status = .downloading
+        status: Status = .downloading,
+        errorMessage: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -33,6 +35,7 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
         self.qualityLabel = qualityLabel
         self.downloadedAt = downloadedAt
         self.status = status
+        self.errorMessage = errorMessage
     }
 }
 
@@ -42,6 +45,7 @@ final class OfflineStore: NSObject, ObservableObject {
         case unsupportedVideoFormat
         case mp4ExportUnavailable
         case exportFailed
+        case hlsTaskCreationFailed
 
         var errorDescription: String? {
             switch self {
@@ -51,6 +55,8 @@ final class OfflineStore: NSObject, ObservableObject {
                 return "La conversion MP4 n’est pas disponible pour cette vidéo."
             case .exportFailed:
                 return "La conversion de la vidéo en MP4 a échoué."
+            case .hlsTaskCreationFailed:
+                return "Le téléchargement HLS n’a pas pu démarrer. Vérifiez que le lien est encore valide."
             }
         }
     }
@@ -157,7 +163,7 @@ final class OfflineStore: NSObject, ObservableObject {
                 }
                 finish(item: item, localURL: destination)
             } catch {
-                fail(item: item)
+                fail(item: item, error: error)
             }
         }
     }
@@ -170,7 +176,7 @@ final class OfflineStore: NSObject, ObservableObject {
             assetArtworkData: nil,
             options: nil
         ) else {
-            fail(item: item)
+            fail(item: item, error: DownloadError.hlsTaskCreationFailed)
             return
         }
 
@@ -227,12 +233,22 @@ final class OfflineStore: NSObject, ObservableObject {
         progress[item.id] = 1
     }
 
-    private func fail(item: OfflineVideo) {
-        update(item: item, status: .failed, localPath: nil)
+    private func fail(item: OfflineVideo, error: Error? = nil) {
+        update(
+            item: item,
+            status: .failed,
+            localPath: nil,
+            errorMessage: error?.localizedDescription
+        )
         progress[item.id] = nil
     }
 
-    private func update(item: OfflineVideo, status: OfflineVideo.Status, localPath: String?) {
+    private func update(
+        item: OfflineVideo,
+        status: OfflineVideo.Status,
+        localPath: String?,
+        errorMessage: String? = nil
+    ) {
         guard let index = videos.firstIndex(where: { $0.id == item.id }) else { return }
         videos[index] = OfflineVideo(
             id: item.id,
@@ -241,7 +257,8 @@ final class OfflineStore: NSObject, ObservableObject {
             localPath: localPath,
             qualityLabel: item.qualityLabel,
             downloadedAt: item.downloadedAt,
-            status: status
+            status: status,
+            errorMessage: errorMessage
         )
         saveState()
     }
@@ -326,7 +343,7 @@ extension OfflineStore: AVAssetDownloadDelegate {
                 self.assetTasks[assetDownloadTask.taskIdentifier] = nil
             } catch {
                 if let item = self.videos.first(where: { $0.id == id }) {
-                    self.fail(item: item)
+                    self.fail(item: item, error: error)
                 }
             }
         }
@@ -369,7 +386,7 @@ extension OfflineStore: AVAssetDownloadDelegate {
 
         Task { @MainActor in
             if let item = self.videos.first(where: { $0.id == id }) {
-                self.fail(item: item)
+                self.fail(item: item, error: error)
             }
         }
         _ = error

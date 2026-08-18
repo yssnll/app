@@ -619,9 +619,19 @@ private struct OfflineVideoRow: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     case .failed:
-                        Label("Échec du téléchargement", systemImage: "exclamationmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label("Échec du téléchargement", systemImage: "exclamationmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+
+                            if let errorMessage = video.errorMessage,
+                               !errorMessage.isEmpty {
+                                Text(errorMessage)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
                     }
                 }
 
