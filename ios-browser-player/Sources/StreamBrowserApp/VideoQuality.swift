@@ -162,11 +162,14 @@ enum VideoQualityResolver {
             throw ResolverError.requestFailed
         }
 
-        return httpResponse
-            .value(forHTTPHeaderField: "Content-Type")?
-            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
-            .first?
-            .map(String.init)?
+        return httpResponse.value(forHTTPHeaderField: "Content-Type")
+            .map { value in
+                String(value.split(
+                    separator: ";",
+                    maxSplits: 1,
+                    omittingEmptySubsequences: true
+                ).first ?? "")
+            }?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
     }

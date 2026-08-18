@@ -131,10 +131,14 @@ final class OfflineStore: NSObject, ObservableObject {
                     .appendingPathComponent(item.id.uuidString)
                     .appendingPathExtension("mp4")
 
-                let mimeType = response.mimeType?
-                    .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
-                    .first?
-                    .map(String.init)?
+                let mimeType = response.mimeType
+                    .map { value in
+                        String(value.split(
+                            separator: ";",
+                            maxSplits: 1,
+                            omittingEmptySubsequences: true
+                        ).first ?? "")
+                    }?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased()
                 let sourceIsAlreadyMP4 = url.pathExtension.lowercased() == "mp4"
