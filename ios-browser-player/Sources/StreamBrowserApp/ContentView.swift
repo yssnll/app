@@ -155,6 +155,16 @@ struct ContentView: View {
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(.mint)
                                     Spacer()
+                                     Button {
+                                         beginDownload(for: currentStreamURL)
+                                     } label: {
+                                         Label("Télécharger", systemImage: "arrow.down.circle.fill")
+                                             .font(.caption.weight(.semibold))
+                                     }
+                                     .buttonStyle(.borderedProminent)
+                                     .controlSize(.small)
+                                     .tint(.indigo)
+                                     .accessibilityLabel("Télécharger cette vidéo")
                                     ShareLink(item: currentStreamURL) {
                                         Image(systemName: "square.and.arrow.up")
                                     }
