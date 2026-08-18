@@ -1,0 +1,6 @@
+{
+  "appName": "Stream Browser",
+  "searchEngineURL": "https://duckduckgo.com/?q=",
+  "supportedSchemes": ["http", "https"],
+  "hlsExtensions": ["m3u8"]
+}
