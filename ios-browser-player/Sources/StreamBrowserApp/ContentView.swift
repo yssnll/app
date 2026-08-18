@@ -14,25 +14,30 @@ struct ContentView: View {
     @State private var showingHistory = false
 
     var body: some View {
-        ZStack {
-            AppBackground()
+        GeometryReader { _ in
+            ZStack {
+                AppBackground()
 
-            TabView(selection: $selectedTab) {
-                browserTab
-                    .tabItem {
-                        Label("Navigateur", systemImage: "safari")
-                    }
-                    .tag(AppTab.browser)
+                TabView(selection: $selectedTab) {
+                    browserTab
+                        .tabItem {
+                            Label("Navigateur", systemImage: "safari")
+                        }
+                        .tag(AppTab.browser)
 
-                playerTab
-                    .tabItem {
-                        Label("Lecteur", systemImage: "play.rectangle")
-                    }
-                    .tag(AppTab.player)
+                    playerTab
+                        .tabItem {
+                            Label("Lecteur", systemImage: "play.rectangle")
+                        }
+                        .tag(AppTab.player)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .toolbarBackground(.visible, for: .tabBar)
+                .toolbarBackground(Color.black.opacity(0.45), for: .tabBar)
             }
-            .toolbarBackground(.visible, for: .tabBar)
-            .toolbarBackground(Color.black.opacity(0.45), for: .tabBar)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.all)
         .tint(.indigo)
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showingHistory) {
@@ -71,6 +76,7 @@ struct ContentView: View {
                 }
             }
             .ignoresSafeArea(.container, edges: .bottom)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -152,6 +158,7 @@ struct ContentView: View {
                 }
             }
             .ignoresSafeArea(.container, edges: .bottom)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
