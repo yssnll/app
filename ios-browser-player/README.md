@@ -26,34 +26,17 @@ Dans Xcode, remplacez `com.example.StreamBrowser` par votre propre identifiant d
 bundle et sélectionnez votre équipe Apple. Si vous changez cet identifiant, mettez
 également à jour la clé correspondante dans `ci/ExportOptions.plist`.
 
-## Compiler une IPA avec GitHub Actions
+## Compiler une IPA non signée avec GitHub Actions
 
 Le workflow `../.github/workflows/ios.yml` compile automatiquement une vérification
-pour le simulateur à chaque push. Pour créer une IPA signée, lancez manuellement
-le workflow avec **Run workflow** dans GitHub.
+pour le simulateur à chaque push. Pour créer une IPA non signée, lancez manuellement
+le workflow avec **Run workflow** dans GitHub. Aucun secret Apple n'est nécessaire.
 
-Ajoutez ces secrets GitHub au dépôt :
-
-| Secret | Valeur |
-| --- | --- |
-| `APPLE_TEAM_ID` | Team ID Apple Developer |
-| `APPLE_CERTIFICATE_BASE64` | certificat `.p12` encodé en base64 |
-| `APPLE_CERTIFICATE_PASSWORD` | mot de passe du `.p12` |
-| `APPLE_PROVISIONING_PROFILE_BASE64` | profil `.mobileprovision` encodé en base64 |
-| `APPLE_KEYCHAIN_PASSWORD` | mot de passe temporaire pour le trousseau CI |
-
-Pour encoder les fichiers sans afficher leur contenu :
-
-```bash
-base64 -i distribution.p12 | pbcopy
-base64 -i StreamBrowser.mobileprovision | pbcopy
-```
-
-Le profil de provisioning doit correspondre à l’identifiant de bundle utilisé dans
-`project.yml`, et le certificat doit être un certificat **Apple Distribution**.
-Une IPA signée avec un profil Ad Hoc est installable uniquement sur les appareils
-autorisés par Apple. Pour TestFlight, adaptez `method` dans
-`ci/ExportOptions.plist` à `app-store`.
+L'artefact produit s'appelle `StreamBrowser-unsigned-ipa`. Il contient bien un paquet
+`.ipa`, mais il n'est pas installable directement sur un iPhone : Apple exige une
+signature et un provisioning profile pour l'installation sur appareil ou pour
+TestFlight. `ci/ExportOptions.plist` est conservé comme modèle pour une signature
+ultérieure si nécessaire.
 
 ## Remarque réseau
 
