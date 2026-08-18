@@ -31,7 +31,7 @@ des vidéos pour les regarder hors ligne.
 - `ios-browser-player/Sources/StreamBrowserApp/VideoQuality.swift` — lecture des
   playlists HLS et détection des qualités disponibles
 - `ios-browser-player/Sources/StreamBrowserApp/OfflineStore.swift` — téléchargements
-  locaux HLS/fichiers vidéo et persistance des vidéos hors ligne
+  locaux HLS/fichiers vidéo, conversion native en MP4 et persistance des vidéos hors ligne
 - `ios-browser-player/ci/ExportOptions.plist` — options d'export de l'IPA
 
 ## Architecture decisions
@@ -40,8 +40,9 @@ des vidéos pour les regarder hors ligne.
 - Les liens dont l'extension est `.m3u8` sont ouverts dans le lecteur AVPlayer.
 - Un appui long sur un lien `.m3u8`, `.mp4`, `.mov`, `.m4v` ou `.webm` ouvre le
   choix de qualité avant le téléchargement.
-- Les playlists HLS sont téléchargées avec `AVAssetDownloadURLSession` afin de
-  conserver leurs segments et de pouvoir les lire sans réseau.
+- Les vidéos directes et les playlists HLS sont converties nativement en `.mp4`
+  avant d’être marquées comme disponibles hors ligne. Les fichiers finaux sont
+  exportables depuis le lecteur via la feuille de partage iOS.
 - Les URLs temporaires ne sont pas stockées dans le code source : elles sont collées
   par l'utilisateur et peuvent apparaître dans l'historique local.
 - L'IPA du workflow est volontairement non signée : elle sert à empaqueter le build,

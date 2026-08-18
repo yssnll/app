@@ -6,6 +6,7 @@ struct VideoQuality: Identifiable, Hashable {
     let url: URL
     let bitrate: Int?
     let resolution: String?
+    let isHLS: Bool
 
     var detail: String {
         var parts: [String] = []
@@ -21,13 +22,14 @@ struct VideoQuality: Identifiable, Hashable {
         return parts.isEmpty ? "Qualité disponible" : parts.joined(separator: " · ")
     }
 
-    static func original(url: URL) -> VideoQuality {
+    static func original(url: URL, isHLS: Bool = false) -> VideoQuality {
         VideoQuality(
             id: url.absoluteString,
             label: "Qualité d’origine",
             url: url,
             bitrate: nil,
-            resolution: nil
+            resolution: nil,
+            isHLS: isHLS
         )
     }
 
@@ -43,6 +45,7 @@ enum VideoQualityResolver {
     enum ResolverError: LocalizedError {
         case invalidPlaylist
         case requestFailed
+        case unsupportedVideo
 
         var errorDescription: String? {
             switch self {
@@ -50,15 +53,40 @@ enum VideoQualityResolver {
                 return "La playlist vidéo n’est pas lisible."
             case .requestFailed:
                 return "Impossible de récupérer les qualités disponibles."
+            case .unsupportedVideo:
+                return "Ce lien ne pointe pas vers une vidéo téléchargeable."
             }
         }
     }
 
     static func resolve(for url: URL) async throws -> [VideoQuality] {
-        guard url.pathExtension.lowercased() == "m3u8" else {
+        let pathExtension = url.pathExtension.lowercased()
+        let contentType: String?
+
+        if pathExtension == "m3u8" {
+            contentType = "application/vnd.apple.mpegurl"
+        } else if ["mp4", "mov", "m4v", "webm"].contains(pathExtension) {
+            return [.original(url: url)]
+        } else {
+            contentType = try await detectContentType(for: url)
+        }
+
+        let isHLS = pathExtension == "m3u8"
+            || contentType == "application/vnd.apple.mpegurl"
+            || contentType == "application/x-mpegurl"
+
+        guard isHLS || contentType?.hasPrefix("video/") == true else {
+            throw ResolverError.unsupportedVideo
+        }
+
+        guard isHLS else {
             return [.original(url: url)]
         }
 
+        return try await resolveHLS(for: url)
+    }
+
+    private static func resolveHLS(for url: URL) async throws -> [VideoQuality] {
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let httpResponse = response as? HTTPURLResponse,
               (200..<300).contains(httpResponse.statusCode),
@@ -97,7 +125,8 @@ enum VideoQualityResolver {
                     label: label,
                     url: variantURL,
                     bitrate: bitrate,
-                    resolution: resolution
+                    resolution: resolution,
+                    isHLS: true
                 )
             )
         }
@@ -106,7 +135,7 @@ enum VideoQualityResolver {
             guard playlist.contains("#EXTINF:") || playlist.contains("#EXT-X-TARGETDURATION:") else {
                 throw ResolverError.invalidPlaylist
             }
-            return [.original(url: url)]
+            return [.original(url: url, isHLS: true)]
         }
 
         return qualities.sorted {
@@ -119,6 +148,27 @@ enum VideoQualityResolver {
 
             return ($0.bitrate ?? 0) > ($1.bitrate ?? 0)
         }
+    }
+
+    private static func detectContentType(for url: URL) async throws -> String? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<400).contains(httpResponse.statusCode)
+        else {
+            throw ResolverError.requestFailed
+        }
+
+        return httpResponse
+            .value(forHTTPHeaderField: "Content-Type")?
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
+            .first?
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     private static func parseAttributes(_ value: String) -> [String: String] {

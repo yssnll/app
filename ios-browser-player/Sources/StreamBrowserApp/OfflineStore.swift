@@ -38,6 +38,23 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
 
 @MainActor
 final class OfflineStore: NSObject, ObservableObject {
+    private enum DownloadError: LocalizedError {
+        case unsupportedVideoFormat
+        case mp4ExportUnavailable
+        case exportFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedVideoFormat:
+                return "Ce format vidéo n’est pas compatible avec la conversion MP4 sur cet iPhone."
+            case .mp4ExportUnavailable:
+                return "La conversion MP4 n’est pas disponible pour cette vidéo."
+            case .exportFailed:
+                return "La conversion de la vidéo en MP4 a échoué."
+            }
+        }
+    }
+
     @Published private(set) var videos: [OfflineVideo] = []
     @Published private(set) var progress: [UUID: Double] = [:]
 
@@ -74,7 +91,7 @@ final class OfflineStore: NSObject, ObservableObject {
         progress[item.id] = 0
         saveState()
 
-        if quality.url.pathExtension.lowercased() == "m3u8" {
+        if quality.isHLS || quality.url.pathExtension.lowercased() == "m3u8" {
             startHLSDownload(item: item, url: quality.url)
         } else {
             startFileDownload(item: item, url: quality.url)
@@ -102,18 +119,38 @@ final class OfflineStore: NSObject, ObservableObject {
     private func startFileDownload(item: OfflineVideo, url: URL) {
         Task {
             do {
+                progress[item.id] = 0.05
                 let (temporaryURL, response) = try await URLSession.shared.download(from: url)
-                let extensionName = response.mimeType.flatMap { self.fileExtension(for: $0) } ?? url.pathExtension
-                let destination = offlineDirectory
-                    .appendingPathComponent(item.id.uuidString)
-                    .appendingPathExtension(extensionName.isEmpty ? "mp4" : extensionName)
 
                 try fileManager.createDirectory(
                     at: offlineDirectory,
                     withIntermediateDirectories: true
                 )
-                try? fileManager.removeItem(at: destination)
-                try fileManager.moveItem(at: temporaryURL, to: destination)
+
+                let destination = offlineDirectory
+                    .appendingPathComponent(item.id.uuidString)
+                    .appendingPathExtension("mp4")
+
+                let mimeType = response.mimeType?
+                    .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true)
+                    .first?
+                    .map(String.init)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let sourceIsAlreadyMP4 = url.pathExtension.lowercased() == "mp4"
+                    || mimeType == "video/mp4"
+
+                progress[item.id] = 0.55
+                if sourceIsAlreadyMP4 {
+                    try? fileManager.removeItem(at: destination)
+                    try fileManager.moveItem(at: temporaryURL, to: destination)
+                } else {
+                    try await exportToMP4(
+                        sourceURL: temporaryURL,
+                        destinationURL: destination
+                    )
+                    try? fileManager.removeItem(at: temporaryURL)
+                }
                 finish(item: item, localURL: destination)
             } catch {
                 fail(item: item)
@@ -136,6 +173,49 @@ final class OfflineStore: NSObject, ObservableObject {
         task.taskDescription = item.id.uuidString
         assetTasks[task.taskIdentifier] = item.id
         task.resume()
+    }
+
+    private func exportToMP4(sourceURL: URL, destinationURL: URL) async throws {
+        let asset = AVURLAsset(url: sourceURL)
+        try await exportToMP4(asset: asset, destinationURL: destinationURL)
+    }
+
+    private func exportToMP4(asset: AVAsset, destinationURL: URL) async throws {
+        try fileManager.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? fileManager.removeItem(at: destinationURL)
+
+        let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
+        let preset = compatiblePresets.contains(AVAssetExportPresetPassthrough)
+            ? AVAssetExportPresetPassthrough
+            : AVAssetExportPresetHighestQuality
+
+        guard let exporter = AVAssetExportSession(asset: asset, presetName: preset),
+              exporter.supportedFileTypes.contains(.mp4)
+        else {
+            throw DownloadError.mp4ExportUnavailable
+        }
+
+        exporter.outputURL = destinationURL
+        exporter.outputFileType = .mp4
+        exporter.shouldOptimizeForNetworkUse = true
+
+        try await withCheckedThrowingContinuation { continuation in
+            exporter.exportAsynchronously {
+                switch exporter.status {
+                case .completed:
+                    continuation.resume()
+                case .failed, .cancelled:
+                    continuation.resume(
+                        throwing: exporter.error ?? DownloadError.exportFailed
+                    )
+                default:
+                    continuation.resume(throwing: DownloadError.exportFailed)
+                }
+            }
+        }
     }
 
     private func finish(item: OfflineVideo, localURL: URL) {
@@ -225,13 +305,17 @@ extension OfflineStore: AVAssetDownloadDelegate {
         guard let id = assetDownloadTask.taskDescription.flatMap(UUID.init(uuidString:)) else { return }
         Task { @MainActor in
             do {
-                let destination = self.offlineDirectory.appendingPathComponent("\(id.uuidString).movpkg")
+                let destination = self.offlineDirectory
+                    .appendingPathComponent(id.uuidString)
+                    .appendingPathExtension("mp4")
                 try self.fileManager.createDirectory(
                     at: self.offlineDirectory,
                     withIntermediateDirectories: true
                 )
-                try? self.fileManager.removeItem(at: destination)
-                try self.fileManager.copyItem(at: location, to: destination)
+                try await self.exportToMP4(
+                    sourceURL: location,
+                    destinationURL: destination
+                )
 
                 guard let item = self.videos.first(where: { $0.id == id }) else { return }
                 self.finish(item: item, localURL: destination)

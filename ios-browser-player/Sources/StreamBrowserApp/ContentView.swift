@@ -280,11 +280,6 @@ struct ContentView: View {
         downloadError = nil
         showingDownloadOptions = true
 
-        guard browserStore.isVideo(url) else {
-            downloadError = "Ce lien ne pointe pas directement vers une vidéo compatible. Utilisez un lien .m3u8, .mp4, .mov ou .m4v."
-            return
-        }
-
         isResolvingQualities = true
         Task {
             do {
@@ -678,6 +673,13 @@ private struct OfflinePlayerSheet: View {
             .navigationTitle(video.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if let localURL {
+                    ToolbarItem(placement: .topBarLeading) {
+                        ShareLink(item: localURL) {
+                            Label("Exporter", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Fermer") {
                         dismiss()
