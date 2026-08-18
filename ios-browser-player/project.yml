@@ -16,12 +16,14 @@ targets:
       - path: Sources/StreamBrowserApp
     resources:
       - path: Resources/app-config.json
+      - path: Resources/Assets.xcassets
     info:
       path: Resources/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.StreamBrowser
         TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_EMIT_LOC_STRINGS: "YES"
     scheme:
       gatherCoverageData: false
