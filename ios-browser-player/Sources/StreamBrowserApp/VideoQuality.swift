@@ -110,8 +110,8 @@ enum VideoQualityResolver {
         }
 
         return qualities.sorted {
-            let lhsHeight = height(from: $0.resolution)
-            let rhsHeight = height(from: $1.resolution)
+            let lhsHeight = height(from: $0.resolution) ?? 0
+            let rhsHeight = height(from: $1.resolution) ?? 0
 
             if lhsHeight != rhsHeight {
                 return lhsHeight > rhsHeight
