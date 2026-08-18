@@ -46,6 +46,7 @@ enum VideoQualityResolver {
         case invalidPlaylist
         case requestFailed
         case unsupportedVideo
+        case accessDenied
 
         var errorDescription: String? {
             switch self {
@@ -55,6 +56,8 @@ enum VideoQualityResolver {
                 return "Impossible de récupérer les qualités disponibles."
             case .unsupportedVideo:
                 return "Ce lien ne pointe pas vers une vidéo téléchargeable."
+            case .accessDenied:
+                return "Le serveur refuse ce lien vidéo (403). Collez un nouveau lien depuis la page de la vidéo."
             }
         }
     }
@@ -88,10 +91,16 @@ enum VideoQualityResolver {
 
     private static func resolveHLS(for url: URL) async throws -> [VideoQuality] {
         let (data, response) = try await URLSession.shared.data(from: url)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode),
-              let playlist = String(data: data, encoding: .utf8)
-        else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ResolverError.requestFailed
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                throw ResolverError.accessDenied
+            }
+            throw ResolverError.requestFailed
+        }
+        guard let playlist = String(data: data, encoding: .utf8) else {
             throw ResolverError.requestFailed
         }
 
@@ -159,6 +168,10 @@ enum VideoQualityResolver {
         guard let httpResponse = response as? HTTPURLResponse,
               (200..<400).contains(httpResponse.statusCode)
         else {
+            if let httpResponse = response as? HTTPURLResponse,
+               httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                throw ResolverError.accessDenied
+            }
             throw ResolverError.requestFailed
         }
 
