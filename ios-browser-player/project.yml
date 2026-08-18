@@ -18,8 +18,6 @@ targets:
       - path: Resources/app-config.json
       - path: Resources/Assets.xcassets
       - path: Resources/LaunchScreen.storyboard
-    info:
-      path: Resources/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.StreamBrowser
