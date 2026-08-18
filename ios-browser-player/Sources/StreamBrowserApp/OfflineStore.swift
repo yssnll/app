@@ -18,6 +18,7 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
     let downloadedAt: Date
     let status: Status
     let errorMessage: String?
+    let taskIdentifier: Int?
 
     init(
         id: UUID = UUID(),
@@ -27,7 +28,8 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
         qualityLabel: String,
         downloadedAt: Date = Date(),
         status: Status = .downloading,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        taskIdentifier: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -37,6 +39,7 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
         self.downloadedAt = downloadedAt
         self.status = status
         self.errorMessage = errorMessage
+        self.taskIdentifier = taskIdentifier
     }
 }
 
@@ -204,8 +207,28 @@ final class OfflineStore: NSObject, ObservableObject {
         }
 
         task.taskDescription = item.id.uuidString
+        attachTask(task.taskIdentifier, to: item)
         assetTasks[task.taskIdentifier] = item.id
         task.resume()
+    }
+
+    private func attachTask(_ taskIdentifier: Int, to item: OfflineVideo) {
+        guard let index = videos.firstIndex(where: { $0.id == item.id }) else {
+            return
+        }
+
+        videos[index] = OfflineVideo(
+            id: item.id,
+            title: item.title,
+            sourceURL: item.sourceURL,
+            localPath: item.localPath,
+            qualityLabel: item.qualityLabel,
+            downloadedAt: item.downloadedAt,
+            status: item.status,
+            errorMessage: item.errorMessage,
+            taskIdentifier: taskIdentifier
+        )
+        saveState()
     }
 
     private func exportToMP4(sourceURL: URL, destinationURL: URL) async throws {
@@ -260,7 +283,8 @@ final class OfflineStore: NSObject, ObservableObject {
             item: item,
             status: .completed,
             localPath: localURL.path,
-            errorMessage: note
+            errorMessage: note,
+            taskIdentifier: nil
         )
         progress[item.id] = 1
     }
@@ -269,7 +293,8 @@ final class OfflineStore: NSObject, ObservableObject {
         update(
             item: item,
             status: .converting,
-            localPath: packageURL.path
+            localPath: packageURL.path,
+            taskIdentifier: nil
         )
         progress[item.id] = 0.98
     }
@@ -279,7 +304,8 @@ final class OfflineStore: NSObject, ObservableObject {
             item: item,
             status: .failed,
             localPath: nil,
-            errorMessage: error?.localizedDescription
+            errorMessage: error?.localizedDescription,
+            taskIdentifier: nil
         )
         progress[item.id] = nil
     }
@@ -288,7 +314,8 @@ final class OfflineStore: NSObject, ObservableObject {
         item: OfflineVideo,
         status: OfflineVideo.Status,
         localPath: String?,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        taskIdentifier: Int? = nil
     ) {
         guard let index = videos.firstIndex(where: { $0.id == item.id }) else { return }
         videos[index] = OfflineVideo(
@@ -299,7 +326,8 @@ final class OfflineStore: NSObject, ObservableObject {
             qualityLabel: item.qualityLabel,
             downloadedAt: item.downloadedAt,
             status: status,
-            errorMessage: errorMessage
+            errorMessage: errorMessage,
+            taskIdentifier: taskIdentifier
         )
         saveState()
     }
@@ -362,10 +390,19 @@ final class OfflineStore: NSObject, ObservableObject {
     }
 
     private func restoreBackgroundTasks() {
+        // The task description is not guaranteed to survive an iOS wake-up.
+        // Keep the mapping from the identifier persisted with each item.
+        assetTasks = videos.reduce(into: [:]) { result, video in
+            guard let taskIdentifier = video.taskIdentifier else { return }
+            result[taskIdentifier] = video.id
+        }
+        let persistedTaskIDs = assetTasks
+
         configuredAssetSession.getAllTasks { tasks in
             let taskIDs = tasks.reduce(into: [Int: UUID]()) { result, task in
                 guard let assetTask = task as? AVAssetDownloadTask,
                       let id = assetTask.taskDescription.flatMap(UUID.init(uuidString:))
+                          ?? persistedTaskIDs[assetTask.taskIdentifier]
                 else {
                     return
                 }
@@ -373,14 +410,8 @@ final class OfflineStore: NSObject, ObservableObject {
             }
 
             Task { @MainActor in
-                self.assetTasks = taskIDs
-                let activeIDs = Set(taskIDs.values)
-
+                self.assetTasks.merge(taskIDs) { _, latest in latest }
                 for video in self.videos where video.status == .downloading {
-                    guard activeIDs.contains(video.id) else {
-                        self.fail(item: video, error: DownloadError.interrupted)
-                        continue
-                    }
                     self.progress[video.id] = 0
                 }
             }
