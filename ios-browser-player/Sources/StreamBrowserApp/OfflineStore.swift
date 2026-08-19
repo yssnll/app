@@ -1,13 +1,5 @@
 import AVFoundation
 import Combine
-import FFmpegKit
-
-// FFmpegKit exposes the C entry point from its FFmpeg module.
-@_silgen_name("ffmpeg_execute")
-private func ffmpeg_execute(
-    _ argc: Int32,
-    _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
-) -> Int32
 import Foundation
 
 struct OfflineVideo: Codable, Identifiable, Hashable {
@@ -646,10 +638,7 @@ final class OfflineStore: NSObject, ObservableObject {
     private func convertPackage(item: OfflineVideo, packageURL: URL) async {
         do {
             let destination = mp4URL(for: item.id)
-            // AVAssetExportSession cannot decode every MPEG-2/HLS transport
-            // stream on iOS. FFmpeg performs a real transcode to the broadly
-            // supported H.264/AAC MP4 format.
-            try await convertWithFFmpeg(
+            try await exportToMP4(
                 sourceURL: packageURL,
                 destinationURL: destination
             )
@@ -662,57 +651,6 @@ final class OfflineStore: NSObject, ObservableObject {
             try? fileManager.removeItem(at: packageURL)
             fail(item: item, error: error)
         }
-    }
-
-    private func convertWithFFmpeg(
-        sourceURL: URL,
-        destinationURL: URL
-    ) async throws {
-        try fileManager.createDirectory(
-            at: destinationURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? fileManager.removeItem(at: destinationURL)
-
-        let arguments = [
-            "ffmpeg",
-            "-y",
-            "-i", sourceURL.path,
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            destinationURL.path
-        ]
-
-        let result = await Task.detached(priority: .userInitiated) {
-            var argv = arguments.map {
-                UnsafeMutablePointer(mutating: ($0 as NSString).utf8String)
-            }
-            return argv.withUnsafeMutableBufferPointer { buffer in
-                guard let baseAddress = buffer.baseAddress else { return Int32(-1) }
-                return ffmpeg_execute(Int32(arguments.count), baseAddress)
-            }
-        }
-
-        guard result == 0 else {
-            throw conversionError("FFmpeg a renvoyé le code \(result).")
-        }
-    }
-
-    private func conversionError(_ details: String) -> NSError {
-        NSError(
-            domain: "StreamBrowser.Download",
-            code: 2,
-            userInfo: [
-                NSLocalizedDescriptionKey: "Conversion FFmpeg échouée : \(details)"
-            ]
-        )
     }
 
     private func fail(item: OfflineVideo, error: Error? = nil) {
