@@ -341,18 +341,17 @@ final class OfflineStore: NSObject, ObservableObject {
             let combinedFinalURL = finalDirectory
                 .appendingPathComponent("combined")
                 .appendingPathExtension(combinedExtension)
-            let destination = mp4URL(for: item.id)
-            markConverting(item: item, packageURL: combinedFinalURL)
-            try await exportToMP4(
-                sourceURL: combinedFinalURL,
-                destinationURL: destination
-            )
+            let destination = offlineDirectory
+                .appendingPathComponent(item.id.uuidString)
+                .appendingPathExtension(combinedExtension)
+            try? fileManager.removeItem(at: destination)
+            try fileManager.moveItem(at: combinedFinalURL, to: destination)
             try? fileManager.removeItem(at: finalDirectory)
 
             finish(
                 item: item,
                 localURL: destination,
-                note: "Vidéo MP4 disponible hors ligne."
+                note: "Vidéo disponible hors ligne."
             )
         } catch {
             try? fileManager.removeItem(at: temporaryDirectory)
