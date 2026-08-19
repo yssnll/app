@@ -9,8 +9,8 @@ settings:
     SWIFT_VERSION: "5.0"
 packages:
   ffmpeg-kit:
-    url: https://github.com/arthenica/ffmpeg-kit
-    exactVersion: 6.0.2
+    url: https://github.com/kingslay/FFmpegKit
+    branch: main
 targets:
   StreamBrowser:
     type: application
@@ -26,7 +26,7 @@ targets:
         buildPhase: resources
     dependencies:
       - package: ffmpeg-kit
-        product: ffmpeg-kit-ios-https
+        product: FFmpegKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.StreamBrowser

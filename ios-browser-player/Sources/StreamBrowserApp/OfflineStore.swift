@@ -1,6 +1,6 @@
 import AVFoundation
 import Combine
-import ffmpegkit
+import FFmpegKit
 import Foundation
 
 struct OfflineVideo: Codable, Identifiable, Hashable {
@@ -667,44 +667,32 @@ final class OfflineStore: NSObject, ObservableObject {
         )
         try? fileManager.removeItem(at: destinationURL)
 
-        let inputPath = shellQuote(sourceURL.path)
-        let outputPath = shellQuote(destinationURL.path)
-        let command = [
+        let arguments = [
+            "ffmpeg",
             "-y",
-            "-i \(inputPath)",
-            "-map 0:v:0",
-            "-map 0:a:0?",
-            "-c:v libx264",
-            "-preset veryfast",
-            "-crf 23",
-            "-pix_fmt yuv420p",
-            "-c:a aac",
-            "-b:a 128k",
-            "-movflags +faststart",
-            outputPath
-        ].joined(separator: " ")
+            "-i", sourceURL.path,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            destinationURL.path
+        ]
 
-        let session = await withCheckedContinuation { continuation in
-            FFmpegKit.executeAsync(command) { session in
-                continuation.resume(returning: session)
+        let result = await Task.detached(priority: .userInitiated) {
+            var argv = arguments.map {
+                UnsafeMutablePointer(mutating: ($0 as NSString).utf8String)
             }
+            return ffmpeg_execute(Int32(arguments.count), &argv)
         }
 
-        guard let session else {
-            throw conversionError("FFmpeg n’a pas pu démarrer.")
+        guard result == 0 else {
+            throw conversionError("FFmpeg a renvoyé le code \(result).")
         }
-
-        let returnCode = session.getReturnCode()
-        guard ReturnCode.isSuccess(returnCode) else {
-            let details = session.getFailStackTrace()
-                ?? session.getOutput()
-                ?? "Code FFmpeg : \(returnCode?.intValue ?? -1)"
-            throw conversionError(details)
-        }
-    }
-
-    private func shellQuote(_ path: String) -> String {
-        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func conversionError(_ details: String) -> NSError {
