@@ -237,7 +237,9 @@ final class OfflineStore: NSObject, ObservableObject {
         // media segments. Some HLS CDNs reject URLSession's default user agent.
         let asset = AVURLAsset(
             url: url,
-            options: [AVURLAssetHTTPHeaderFieldsKey: networkHeaders]
+            // Xcode 16.4 no longer exposes AVURLAssetHTTPHeaderFieldsKey to
+            // Swift, but AVFoundation still accepts its documented key.
+            options: ["AVURLAssetHTTPHeaderFieldsKey": networkHeaders]
         )
         guard let task = configuredAssetSession.makeAssetDownloadTask(
             asset: asset,
