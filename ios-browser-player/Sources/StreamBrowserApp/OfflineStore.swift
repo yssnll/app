@@ -79,6 +79,10 @@ final class OfflineStore: NSObject, ObservableObject {
 
     private let fileManager = FileManager.default
     private let stateFileName = "offline-videos.json"
+    private let networkHeaders: [String: String] = [
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Version/16.0 Mobile/15E148 Safari/604.1",
+        "Accept": "*/*"
+    ]
     private var assetTasks: [Int: UUID] = [:]
     private var backgroundCompletionHandler: (() -> Void)?
 
@@ -104,6 +108,8 @@ final class OfflineStore: NSObject, ObservableObject {
         )
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
+        configuration.waitsForConnectivity = true
+        configuration.httpAdditionalHeaders = networkHeaders
         return AVAssetDownloadURLSession(
             configuration: configuration,
             assetDownloadDelegate: self,
@@ -227,7 +233,12 @@ final class OfflineStore: NSObject, ObservableObject {
     }
 
     private func startHLSDownload(item: OfflineVideo, url: URL) {
-        let asset = AVURLAsset(url: url)
+        // Keep the same headers for the master playlist, variant playlists and
+        // media segments. Some HLS CDNs reject URLSession's default user agent.
+        let asset = AVURLAsset(
+            url: url,
+            options: [AVURLAssetHTTPHeaderFieldsKey: networkHeaders]
+        )
         guard let task = configuredAssetSession.makeAssetDownloadTask(
             asset: asset,
             assetTitle: item.title,
@@ -611,15 +622,24 @@ extension OfflineStore: AVAssetDownloadDelegate {
                     withIntermediateDirectories: true
                 )
                 try? self.fileManager.removeItem(at: packageURL)
-                try self.fileManager.moveItem(at: location, to: packageURL)
+                do {
+                    try self.fileManager.moveItem(at: location, to: packageURL)
+                } catch {
+                    // A copy fallback is useful when iOS places the temporary
+                    // package on a different volume during a background wake.
+                    try self.fileManager.copyItem(at: location, to: packageURL)
+                    try? self.fileManager.removeItem(at: location)
+                }
 
-                // Mark the download as usable immediately. Conversion is a
-                // second step and must never leave the offline row stuck at
-                // "downloading" if an iOS export preset rejects this HLS.
-                self.markConverting(item: item, packageURL: packageURL)
-
-                await self.convertPackage(item: item, packageURL: packageURL)
-
+                // .movpkg is Apple's native offline HLS format. It is already
+                // playable by AVPlayer, so do not block visibility on an
+                // optional MP4 export (which can hang or be unsupported for
+                // encrypted/segmented streams).
+                self.finish(
+                    item: item,
+                    localURL: packageURL,
+                    note: "Disponible hors ligne (HLS local)."
+                )
                 self.assetTasks[taskIdentifier] = nil
             } catch {
                 self.fail(item: item, error: error)

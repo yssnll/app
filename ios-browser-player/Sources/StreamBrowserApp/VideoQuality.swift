@@ -42,6 +42,11 @@ struct VideoQuality: Identifiable, Hashable {
 }
 
 enum VideoQualityResolver {
+    private static let requestHeaders = [
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Version/16.0 Mobile/15E148 Safari/604.1",
+        "Accept": "*/*"
+    ]
+
     enum ResolverError: LocalizedError {
         case invalidPlaylist
         case requestFailed
@@ -90,7 +95,11 @@ enum VideoQualityResolver {
     }
 
     private static func resolveHLS(for url: URL) async throws -> [VideoQuality] {
-        let (data, response) = try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 20
+        request.allHTTPHeaderFields = requestHeaders
+        let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ResolverError.requestFailed
         }
@@ -189,6 +198,7 @@ enum VideoQualityResolver {
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
         request.timeoutInterval = 10
+        request.allHTTPHeaderFields = requestHeaders
 
         let (_, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
