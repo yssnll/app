@@ -7,6 +7,10 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+packages:
+  ffmpeg-kit:
+    url: https://github.com/arthenica/ffmpeg-kit
+    exactVersion: 6.0.2
 targets:
   StreamBrowser:
     type: application
@@ -20,6 +24,9 @@ targets:
         buildPhase: resources
       - path: Resources/LaunchScreen.storyboard
         buildPhase: resources
+    dependencies:
+      - package: ffmpeg-kit
+        product: ffmpeg-kit-ios-https
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.StreamBrowser

@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import ffmpegkit
 import Foundation
 
 struct OfflineVideo: Codable, Identifiable, Hashable {
@@ -638,7 +639,10 @@ final class OfflineStore: NSObject, ObservableObject {
     private func convertPackage(item: OfflineVideo, packageURL: URL) async {
         do {
             let destination = mp4URL(for: item.id)
-            try await exportToMP4(
+            // AVAssetExportSession cannot decode every MPEG-2/HLS transport
+            // stream on iOS. FFmpeg performs a real transcode to the broadly
+            // supported H.264/AAC MP4 format.
+            try await convertWithFFmpeg(
                 sourceURL: packageURL,
                 destinationURL: destination
             )
@@ -651,6 +655,66 @@ final class OfflineStore: NSObject, ObservableObject {
             try? fileManager.removeItem(at: packageURL)
             fail(item: item, error: error)
         }
+    }
+
+    private func convertWithFFmpeg(
+        sourceURL: URL,
+        destinationURL: URL
+    ) async throws {
+        try fileManager.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? fileManager.removeItem(at: destinationURL)
+
+        let inputPath = shellQuote(sourceURL.path)
+        let outputPath = shellQuote(destinationURL.path)
+        let command = [
+            "-y",
+            "-i \(inputPath)",
+            "-map 0:v:0",
+            "-map 0:a:0?",
+            "-c:v libx264",
+            "-preset veryfast",
+            "-crf 23",
+            "-pix_fmt yuv420p",
+            "-c:a aac",
+            "-b:a 128k",
+            "-movflags +faststart",
+            outputPath
+        ].joined(separator: " ")
+
+        let session = await withCheckedContinuation { continuation in
+            FFmpegKit.executeAsync(command) { session in
+                continuation.resume(returning: session)
+            }
+        }
+
+        guard let session else {
+            throw conversionError("FFmpeg n’a pas pu démarrer.")
+        }
+
+        let returnCode = session.getReturnCode()
+        guard ReturnCode.isSuccess(returnCode) else {
+            let details = session.getFailStackTrace()
+                ?? session.getOutput()
+                ?? "Code FFmpeg : \(returnCode?.intValue ?? -1)"
+            throw conversionError(details)
+        }
+    }
+
+    private func shellQuote(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func conversionError(_ details: String) -> NSError {
+        NSError(
+            domain: "StreamBrowser.Download",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Conversion FFmpeg échouée : \(details)"
+            ]
+        )
     }
 
     private func fail(item: OfflineVideo, error: Error? = nil) {

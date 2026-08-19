@@ -7,7 +7,8 @@ Application iOS native en SwiftUI qui permet de :
 - coller un lien HLS direct qui se termine par `.m3u8` ;
 - lire le flux avec `AVPlayer` et mémoriser un historique local au format JSON.
 - télécharger les vidéos directes en `.mp4` et convertir automatiquement les
-  flux HLS MPEG-TS en `.mp4` après la fin du téléchargement.
+  flux HLS MPEG-TS en `.mp4` après la fin du téléchargement avec FFmpeg
+  (H.264/AAC).
 
 Le lien HLS doit être collé dans la barre de navigation. Les liens temporaires ne sont
 pas stockés dans le code source.
