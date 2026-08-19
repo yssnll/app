@@ -646,7 +646,7 @@ private struct OfflineVideoRow: View {
 
                 Spacer(minLength: 4)
 
-                if video.status == .completed {
+                if video.status == .completed || video.status == .converting {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)

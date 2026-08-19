@@ -47,6 +47,9 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
 final class OfflineStore: NSObject, ObservableObject {
     private static let backgroundSessionIdentifier = "com.example.StreamBrowser.offline-assets"
     static weak var shared: OfflineStore?
+    private static var pendingBackgroundCompletionHandlers: [
+        String: () -> Void
+    ] = [:]
 
     private enum DownloadError: LocalizedError {
         case unsupportedVideoFormat
@@ -84,6 +87,14 @@ final class OfflineStore: NSObject, ObservableObject {
         Self.shared = self
         loadState()
         restoreBackgroundTasks()
+        resumePendingConversions()
+        if let completionHandler = Self.pendingBackgroundCompletionHandlers
+            .removeValue(forKey: Self.backgroundSessionIdentifier) {
+            handleBackgroundEvents(
+                for: Self.backgroundSessionIdentifier,
+                completionHandler: completionHandler
+            )
+        }
     }
 
     private lazy var configuredAssetSession: AVAssetDownloadURLSession = {
@@ -118,12 +129,32 @@ final class OfflineStore: NSObject, ObservableObject {
     }
 
     func localURL(for video: OfflineVideo) -> URL? {
-        guard video.status == .completed,
-              let localPath = video.localPath
+        guard video.status == .completed || video.status == .converting,
+              let localPath = video.localPath,
+              fileManager.fileExists(atPath: localPath)
         else {
             return nil
         }
         return URL(fileURLWithPath: localPath)
+    }
+
+    static func receiveBackgroundEvents(
+        for identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == backgroundSessionIdentifier else {
+            completionHandler()
+            return
+        }
+
+        if let store = shared {
+            store.handleBackgroundEvents(
+                for: identifier,
+                completionHandler: completionHandler
+            )
+        } else {
+            pendingBackgroundCompletionHandlers[identifier] = completionHandler
+        }
     }
 
     func handleBackgroundEvents(
@@ -212,6 +243,18 @@ final class OfflineStore: NSObject, ObservableObject {
         task.resume()
     }
 
+    private func resumePendingConversions() {
+        for video in videos where video.status == .converting {
+            guard let localPath = video.localPath else { continue }
+            let packageURL = URL(fileURLWithPath: localPath)
+            guard fileManager.fileExists(atPath: localPath) else { continue }
+
+            Task { @MainActor in
+                await convertPackage(item: video, packageURL: packageURL)
+            }
+        }
+    }
+
     private func attachTask(_ taskIdentifier: Int, to item: OfflineVideo) {
         guard let index = videos.firstIndex(where: { $0.id == item.id }) else {
             return
@@ -297,6 +340,26 @@ final class OfflineStore: NSObject, ObservableObject {
             taskIdentifier: nil
         )
         progress[item.id] = 0.98
+    }
+
+    private func convertPackage(item: OfflineVideo, packageURL: URL) async {
+        do {
+            let destination = mp4URL(for: item.id)
+            try await exportToMP4(
+                sourceURL: packageURL,
+                destinationURL: destination
+            )
+            try? fileManager.removeItem(at: packageURL)
+            finish(item: item, localURL: destination)
+        } catch {
+            // The package itself remains playable with AVPlayer. Conversion is
+            // optional and must not make an otherwise complete download fail.
+            finish(
+                item: item,
+                localURL: packageURL,
+                note: "Vidéo disponible hors ligne (format HLS local)."
+            )
+        }
     }
 
     private func fail(item: OfflineVideo, error: Error? = nil) {
@@ -478,24 +541,7 @@ extension OfflineStore: AVAssetDownloadDelegate {
                 // "downloading" if an iOS export preset rejects this HLS.
                 self.markConverting(item: item, packageURL: packageURL)
 
-                do {
-                    let destination = self.mp4URL(for: id)
-                    try await self.exportToMP4(
-                        sourceURL: packageURL,
-                        destinationURL: destination
-                    )
-                    try? self.fileManager.removeItem(at: packageURL)
-                    self.finish(item: item, localURL: destination)
-                } catch {
-                    // The downloaded HLS package is still a valid offline
-                    // AVPlayer asset, so keep it instead of reporting a
-                    // failed download when MP4 conversion is unavailable.
-                    self.finish(
-                        item: item,
-                        localURL: packageURL,
-                        note: "Vidéo disponible hors ligne (format HLS local)."
-                    )
-                }
+                await self.convertPackage(item: item, packageURL: packageURL)
 
                 self.assetTasks[taskIdentifier] = nil
             } catch {

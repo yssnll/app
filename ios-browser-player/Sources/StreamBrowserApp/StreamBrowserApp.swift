@@ -8,12 +8,10 @@ final class StreamBrowserAppDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        Task { @MainActor in
-            OfflineStore.shared?.handleBackgroundEvents(
-                for: identifier,
-                completionHandler: completionHandler
-            )
-        }
+        OfflineStore.receiveBackgroundEvents(
+            for: identifier,
+            completionHandler: completionHandler
+        )
     }
 }
 
