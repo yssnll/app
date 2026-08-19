@@ -1,6 +1,13 @@
 import AVFoundation
 import Combine
 import FFmpegKit
+
+// FFmpegKit exposes the C entry point from its FFmpeg module.
+@_silgen_name("ffmpeg_execute")
+private func ffmpeg_execute(
+    _ argc: Int32,
+    _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+) -> Int32
 import Foundation
 
 struct OfflineVideo: Codable, Identifiable, Hashable {
