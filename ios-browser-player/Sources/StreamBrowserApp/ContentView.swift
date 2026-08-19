@@ -93,7 +93,11 @@ struct ContentView: View {
                     if let currentWebURL {
                         BrowserView(
                             url: currentWebURL,
-                            onLinkLongPress: beginDownload(for:)
+                            onLinkLongPress: beginDownload(for:),
+                            onVideoURLDetected: { videoURL in
+                                currentStreamURL = videoURL
+                                selectedTab = .player
+                            }
                         )
                             .id(currentWebURL.absoluteString)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
