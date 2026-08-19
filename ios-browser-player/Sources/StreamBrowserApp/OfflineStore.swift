@@ -695,7 +695,7 @@ final class OfflineStore: NSObject, ObservableObject {
                 UnsafeMutablePointer(mutating: ($0 as NSString).utf8String)
             }
             return argv.withUnsafeMutableBufferPointer { buffer in
-                guard let baseAddress = buffer.baseAddress else { return -1 }
+                guard let baseAddress = buffer.baseAddress else { return Int32(-1) }
                 return ffmpeg_execute(Int32(arguments.count), baseAddress)
             }
         }
