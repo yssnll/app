@@ -534,13 +534,38 @@ final class OfflineStore: NSObject, ObservableObject {
         try? fileManager.removeItem(at: destinationURL)
 
         let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
-        // Passthrough frequently fails for MPEG-TS -> MP4. Force a real
-        // transcode for downloaded HLS media instead of returning a broken
-        // or empty container.
-        let preset = compatiblePresets.contains(AVAssetExportPresetHighestQuality)
-            ? AVAssetExportPresetHighestQuality
-            : compatiblePresets.first ?? AVAssetExportPresetHighestQuality
+        // Passthrough/highest quality can fail for MPEG-TS streams even when
+        // the asset is playable. Try progressively more compatible presets;
+        // each one forces AVFoundation to produce a real MP4 container.
+        let presets = [
+            AVAssetExportPresetHighestQuality,
+            AVAssetExportPresetMediumQuality,
+            AVAssetExportPresetLowQuality
+        ].filter { compatiblePresets.contains($0) }
 
+        var lastError: Error?
+        for preset in presets {
+            do {
+                try await performMP4Export(
+                    asset: asset,
+                    destinationURL: destinationURL,
+                    preset: preset
+                )
+                return
+            } catch {
+                lastError = error
+                try? fileManager.removeItem(at: destinationURL)
+            }
+        }
+
+        throw lastError ?? DownloadError.mp4ExportUnavailable
+    }
+
+    private func performMP4Export(
+        asset: AVAsset,
+        destinationURL: URL,
+        preset: String
+    ) async throws {
         guard let exporter = AVAssetExportSession(asset: asset, presetName: preset),
               exporter.supportedFileTypes.contains(.mp4)
         else {
@@ -557,8 +582,18 @@ final class OfflineStore: NSObject, ObservableObject {
                 case .completed:
                     continuation.resume()
                 case .failed, .cancelled:
-                    let message = exporter.error?.localizedDescription
-                        ?? DownloadError.exportFailed.localizedDescription
+                    let exportError = exporter.error as NSError?
+                    let details = [
+                        exportError?.localizedDescription,
+                        exportError?.localizedFailureReason,
+                        exportError?.localizedRecoverySuggestion
+                    ]
+                    .compactMap { $0 }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " — ")
+                    let message = details.isEmpty
+                        ? DownloadError.exportFailed.localizedDescription
+                        : details
                     continuation.resume(
                         throwing: NSError(
                             domain: "StreamBrowser.Download",
