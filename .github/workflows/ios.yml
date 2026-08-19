@@ -1,0 +1,84 @@
+name: iOS build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulator-build:
+    name: Compile check
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios-browser-player
+        run: xcodegen generate
+
+      - name: Build for iOS Simulator
+        working-directory: ios-browser-player
+        run: >
+          xcodebuild
+          -project StreamBrowser.xcodeproj
+          -scheme StreamBrowser
+          -sdk iphonesimulator
+          -destination 'generic/platform=iOS Simulator'
+          -configuration Debug
+          CODE_SIGNING_ALLOWED=NO
+          build
+
+  unsigned-ipa:
+    name: Build unsigned IPA
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios-browser-player
+        run: xcodegen generate
+
+      - name: Archive application without signing
+        working-directory: ios-browser-player
+        run: |
+          xcodebuild \
+            -project StreamBrowser.xcodeproj \
+            -scheme StreamBrowser \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/StreamBrowser.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean archive
+
+      - name: Package unsigned IPA
+        run: |
+          rm -rf "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/export"
+          mkdir -p "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/export"
+          cp -R \
+            "$RUNNER_TEMP/StreamBrowser.xcarchive/Products/Applications/StreamBrowser.app" \
+            "$RUNNER_TEMP/Payload/StreamBrowser.app"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/Payload" \
+            "$RUNNER_TEMP/export/StreamBrowser-unsigned.ipa"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: StreamBrowser-unsigned-ipa
+          path: ${{ runner.temp }}/export/StreamBrowser-unsigned.ipa
+          if-no-files-found: error
