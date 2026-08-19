@@ -85,6 +85,7 @@ final class OfflineStore: NSObject, ObservableObject {
     override init() {
         super.init()
         Self.shared = self
+        prepareDocumentsStorage()
         loadState()
         restoreBackgroundTasks()
         resumePendingConversions()
@@ -399,8 +400,22 @@ final class OfflineStore: NSObject, ObservableObject {
         fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     }
 
+    private var documentsDirectory: URL {
+        fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    private var legacyOfflineDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent(
+            "OfflineVideos",
+            isDirectory: true
+        )
+    }
+
     private var offlineDirectory: URL {
-        applicationSupportDirectory.appendingPathComponent("OfflineVideos", isDirectory: true)
+        documentsDirectory.appendingPathComponent(
+            "Stream Browser Downloads",
+            isDirectory: true
+        )
     }
 
     private func hlsPackageURL(for id: UUID) -> URL {
@@ -419,6 +434,36 @@ final class OfflineStore: NSObject, ObservableObject {
         applicationSupportDirectory.appendingPathComponent(stateFileName)
     }
 
+    private func prepareDocumentsStorage() {
+        do {
+            try fileManager.createDirectory(
+                at: offlineDirectory,
+                withIntermediateDirectories: true
+            )
+            migrateLegacyDownloads()
+        } catch {
+            // A later download reports the visible error if Documents is
+            // unavailable. The directory is retried when that download starts.
+        }
+    }
+
+    private func migrateLegacyDownloads() {
+        guard fileManager.fileExists(atPath: legacyOfflineDirectory.path),
+              let entries = try? fileManager.contentsOfDirectory(
+                  at: legacyOfflineDirectory,
+                  includingPropertiesForKeys: nil
+              )
+        else {
+            return
+        }
+
+        for entry in entries {
+            let destination = offlineDirectory.appendingPathComponent(entry.lastPathComponent)
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+            try? fileManager.moveItem(at: entry, to: destination)
+        }
+    }
+
     private func loadState() {
         guard let data = try? Data(contentsOf: stateURL),
               let savedVideos = try? JSONDecoder().decode([OfflineVideo].self, from: data)
@@ -426,10 +471,13 @@ final class OfflineStore: NSObject, ObservableObject {
             return
         }
 
+        var stateWasMigrated = false
         videos = savedVideos.compactMap { video in
+            let normalizedLocalPath = normalizedLocalPath(for: video.localPath)
+            stateWasMigrated = stateWasMigrated || normalizedLocalPath != video.localPath
             switch video.status {
             case .completed, .converting:
-                guard let localPath = video.localPath,
+                guard let localPath = normalizedLocalPath,
                       fileManager.fileExists(atPath: localPath)
                 else {
                     return nil
@@ -437,7 +485,23 @@ final class OfflineStore: NSObject, ObservableObject {
             case .downloading, .failed:
                 break
             }
-            return video
+            guard normalizedLocalPath != video.localPath else {
+                return video
+            }
+            return OfflineVideo(
+                id: video.id,
+                title: video.title,
+                sourceURL: video.sourceURL,
+                localPath: normalizedLocalPath,
+                qualityLabel: video.qualityLabel,
+                downloadedAt: video.downloadedAt,
+                status: video.status,
+                errorMessage: video.errorMessage,
+                taskIdentifier: video.taskIdentifier
+            )
+        }
+        if stateWasMigrated {
+            saveState()
         }
 
         for video in videos {
@@ -450,6 +514,19 @@ final class OfflineStore: NSObject, ObservableObject {
                 break
             }
         }
+    }
+
+    private func normalizedLocalPath(for path: String?) -> String? {
+        guard let path else { return nil }
+        guard path.hasPrefix(legacyOfflineDirectory.path) else { return path }
+
+        let relativePath = String(
+            path.dropFirst(legacyOfflineDirectory.path.count)
+        ).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !relativePath.isEmpty else { return path }
+
+        let newURL = offlineDirectory.appendingPathComponent(relativePath)
+        return fileManager.fileExists(atPath: newURL.path) ? newURL.path : path
     }
 
     private func restoreBackgroundTasks() {
