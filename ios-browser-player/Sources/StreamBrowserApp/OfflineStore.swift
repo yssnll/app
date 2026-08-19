@@ -313,13 +313,23 @@ final class OfflineStore: NSObject, ObservableObject {
             )
             try fileManager.moveItem(at: temporaryDirectory, to: finalDirectory)
 
+            let localPlaylistURL = finalDirectory.appendingPathComponent("offline.m3u8")
+            let destination = mp4URL(for: item.id)
+            markConverting(item: item, packageURL: localPlaylistURL)
+            try await exportToMP4(
+                sourceURL: localPlaylistURL,
+                destinationURL: destination
+            )
+            try? fileManager.removeItem(at: finalDirectory)
+
             finish(
                 item: item,
-                localURL: finalDirectory.appendingPathComponent("offline.m3u8"),
-                note: "Disponible hors ligne."
+                localURL: destination,
+                note: "Vidéo MP4 disponible hors ligne."
             )
         } catch {
             try? fileManager.removeItem(at: temporaryDirectory)
+            try? fileManager.removeItem(at: finalDirectory)
             fail(item: item, error: error)
         }
     }
