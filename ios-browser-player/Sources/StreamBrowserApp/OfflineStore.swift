@@ -306,7 +306,9 @@ final class OfflineStore: NSObject, ObservableObject {
 
             // Build one local media file before asking AVFoundation to export.
             // This is more reliable than exporting a file:// HLS playlist,
-            // especially for MPEG-TS streams.
+            // especially for MPEG-TS streams. A .ts file is not a finished
+            // download for the user: iOS may identify it as MPEG-2 transport
+            // stream and AVPlayer cannot reliably seek/play it from Files.
             let combinedExtension = parsed.mapURL == nil ? "ts" : "mp4"
             let combinedURL = temporaryDirectory
                 .appendingPathComponent("combined")
@@ -327,31 +329,27 @@ final class OfflineStore: NSObject, ObservableObject {
                 try combinedHandle.close()
             }
 
-            let localPlaylist = makeLocalPlaylist(
-                parsed: parsed,
-                hasInitializationMap: parsed.mapURL != nil
+            // MPEG-TS HLS segments must be transcoded/remuxed into a real
+            // MP4 container before marking the item as completed. Previously
+            // the raw .ts file was moved to Downloads, which produced a file
+            // that looked downloaded but was not playable on iOS.
+            markConverting(item: item, packageURL: combinedURL)
+            let convertedURL = temporaryDirectory.appendingPathComponent("converted.mp4")
+            try await exportToMP4(
+                sourceURL: combinedURL,
+                destinationURL: convertedURL
             )
-            try localPlaylist.write(
-                to: temporaryDirectory.appendingPathComponent("offline.m3u8"),
-                atomically: true,
-                encoding: .utf8
-            )
-            try fileManager.moveItem(at: temporaryDirectory, to: finalDirectory)
 
-            let combinedFinalURL = finalDirectory
-                .appendingPathComponent("combined")
-                .appendingPathExtension(combinedExtension)
             let destination = offlineDirectory
                 .appendingPathComponent(item.id.uuidString)
-                .appendingPathExtension(combinedExtension)
+                .appendingPathExtension("mp4")
             try? fileManager.removeItem(at: destination)
-            try fileManager.moveItem(at: combinedFinalURL, to: destination)
-            try? fileManager.removeItem(at: finalDirectory)
+            try fileManager.moveItem(at: convertedURL, to: destination)
 
             finish(
                 item: item,
                 localURL: destination,
-                note: "Vidéo disponible hors ligne."
+                note: "Vidéo MP4 disponible hors ligne."
             )
         } catch {
             try? fileManager.removeItem(at: temporaryDirectory)
