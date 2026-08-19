@@ -281,8 +281,10 @@ final class OfflineStore: NSObject, ObservableObject {
                 throw DownloadError.invalidHLSPlaylist
             }
 
+            var initializationData: Data?
             if let mapURL = parsed.mapURL {
                 let (data, _) = try await requestData(url: mapURL)
+                initializationData = data
                 try data.write(
                     to: temporaryDirectory.appendingPathComponent("init.mp4"),
                     options: .atomic
@@ -302,6 +304,29 @@ final class OfflineStore: NSObject, ObservableObject {
                 )
             }
 
+            // Build one local media file before asking AVFoundation to export.
+            // This is more reliable than exporting a file:// HLS playlist,
+            // especially for MPEG-TS streams.
+            let combinedExtension = parsed.mapURL == nil ? "ts" : "mp4"
+            let combinedURL = temporaryDirectory
+                .appendingPathComponent("combined")
+                .appendingPathExtension(combinedExtension)
+            fileManager.createFile(atPath: combinedURL.path, contents: nil)
+            do {
+                let combinedHandle = try FileHandle(forWritingTo: combinedURL)
+                if let initializationData {
+                    try combinedHandle.write(contentsOf: initializationData)
+                }
+                for index in parsed.segments.indices {
+                    let extensionName = parsed.mapURL == nil ? "ts" : "m4s"
+                    let segmentURL = temporaryDirectory
+                        .appendingPathComponent(String(format: "segment-%05d", index))
+                        .appendingPathExtension(extensionName)
+                    try combinedHandle.write(contentsOf: Data(contentsOf: segmentURL))
+                }
+                try combinedHandle.close()
+            }
+
             let localPlaylist = makeLocalPlaylist(
                 parsed: parsed,
                 hasInitializationMap: parsed.mapURL != nil
@@ -313,11 +338,13 @@ final class OfflineStore: NSObject, ObservableObject {
             )
             try fileManager.moveItem(at: temporaryDirectory, to: finalDirectory)
 
-            let localPlaylistURL = finalDirectory.appendingPathComponent("offline.m3u8")
+            let combinedFinalURL = finalDirectory
+                .appendingPathComponent("combined")
+                .appendingPathExtension(combinedExtension)
             let destination = mp4URL(for: item.id)
-            markConverting(item: item, packageURL: localPlaylistURL)
+            markConverting(item: item, packageURL: combinedFinalURL)
             try await exportToMP4(
-                sourceURL: localPlaylistURL,
+                sourceURL: combinedFinalURL,
                 destinationURL: destination
             )
             try? fileManager.removeItem(at: finalDirectory)
@@ -499,9 +526,12 @@ final class OfflineStore: NSObject, ObservableObject {
         try? fileManager.removeItem(at: destinationURL)
 
         let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
-        let preset = compatiblePresets.contains(AVAssetExportPresetPassthrough)
-            ? AVAssetExportPresetPassthrough
-            : AVAssetExportPresetHighestQuality
+        // Passthrough frequently fails for MPEG-TS -> MP4. Force a real
+        // transcode for downloaded HLS media instead of returning a broken
+        // or empty container.
+        let preset = compatiblePresets.contains(AVAssetExportPresetHighestQuality)
+            ? AVAssetExportPresetHighestQuality
+            : compatiblePresets.first ?? AVAssetExportPresetHighestQuality
 
         guard let exporter = AVAssetExportSession(asset: asset, presetName: preset),
               exporter.supportedFileTypes.contains(.mp4)
@@ -519,8 +549,16 @@ final class OfflineStore: NSObject, ObservableObject {
                 case .completed:
                     continuation.resume()
                 case .failed, .cancelled:
+                    let message = exporter.error?.localizedDescription
+                        ?? DownloadError.exportFailed.localizedDescription
                     continuation.resume(
-                        throwing: exporter.error ?? DownloadError.exportFailed
+                        throwing: NSError(
+                            domain: "StreamBrowser.Download",
+                            code: 1,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: "Conversion MP4 échouée : \(message)"
+                            ]
+                        )
                     )
                 default:
                     continuation.resume(throwing: DownloadError.exportFailed)
