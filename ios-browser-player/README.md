@@ -6,8 +6,8 @@ Application iOS native en SwiftUI qui permet de :
 - ouvrir les pages dans un navigateur intégré ;
 - coller un lien HLS direct qui se termine par `.m3u8` ;
 - lire le flux avec `AVPlayer` et mémoriser un historique local au format JSON.
-- télécharger les vidéos directes en `.mp4` et les flux HLS dans le format natif
-  hors ligne Apple `.movpkg`, lisible directement par `AVPlayer`.
+- télécharger les vidéos directes en `.mp4` et les flux HLS en reconstruisant
+  une playlist locale avec ses segments, lisible directement par `AVPlayer`.
 
 Le lien HLS doit être collé dans la barre de navigation. Les liens temporaires ne sont
 pas stockés dans le code source.

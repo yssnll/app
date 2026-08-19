@@ -57,6 +57,9 @@ final class OfflineStore: NSObject, ObservableObject {
         case exportFailed
         case hlsTaskCreationFailed
         case interrupted
+        case invalidHLSPlaylist
+        case encryptedHLSUnsupported
+        case hlsSegmentFailed
 
         var errorDescription: String? {
             switch self {
@@ -70,6 +73,12 @@ final class OfflineStore: NSObject, ObservableObject {
                 return "Le téléchargement HLS n’a pas pu démarrer. Vérifiez que le lien est encore valide."
             case .interrupted:
                 return "Le téléchargement a été interrompu avant sa finalisation."
+            case .invalidHLSPlaylist:
+                return "La playlist HLS est invalide ou ne contient aucun segment vidéo."
+            case .encryptedHLSUnsupported:
+                return "Cette vidéo HLS est chiffrée et ne peut pas être enregistrée hors ligne."
+            case .hlsSegmentFailed:
+                return "Un segment vidéo n’a pas pu être téléchargé. Le lien a peut-être expiré."
             }
         }
     }
@@ -233,28 +242,207 @@ final class OfflineStore: NSObject, ObservableObject {
     }
 
     private func startHLSDownload(item: OfflineVideo, url: URL) {
-        // Keep the same headers for the master playlist, variant playlists and
-        // media segments. Some HLS CDNs reject URLSession's default user agent.
-        let asset = AVURLAsset(
-            url: url,
-            // Xcode 16.4 no longer exposes AVURLAssetHTTPHeaderFieldsKey to
-            // Swift, but AVFoundation still accepts its documented key.
-            options: ["AVURLAssetHTTPHeaderFieldsKey": networkHeaders]
-        )
-        guard let task = configuredAssetSession.makeAssetDownloadTask(
-            asset: asset,
-            assetTitle: item.title,
-            assetArtworkData: nil,
-            options: nil
-        ) else {
-            fail(item: item, error: DownloadError.hlsTaskCreationFailed)
-            return
+        // AVAssetDownloadURLSession is convenient but unreliable with signed
+        // CDNs: query parameters are often lost when resolving segment URLs.
+        // Download the playlist ourselves and write a local HLS playlist so
+        // every segment receives the original signed query.
+        Task { @MainActor in
+            await self.downloadHLSPlaylist(item: item, url: url)
+        }
+    }
+
+    private struct HLSSegment {
+        let duration: String
+        let url: URL
+    }
+
+    private func downloadHLSPlaylist(item: OfflineVideo, url: URL) async {
+        let temporaryDirectory = offlineDirectory
+            .appendingPathComponent("\(item.id.uuidString).hls.tmp", isDirectory: true)
+        let finalDirectory = offlineDirectory
+            .appendingPathComponent("\(item.id.uuidString).hls", isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(
+                at: temporaryDirectory,
+                withIntermediateDirectories: true
+            )
+            try? fileManager.removeItem(at: finalDirectory)
+
+            let playlist = try await requestText(url: url)
+            guard !playlist.contains("#EXT-X-KEY:METHOD=AES-128")
+                    && !playlist.contains("#EXT-X-KEY:METHOD=SAMPLE-AES")
+            else {
+                throw DownloadError.encryptedHLSUnsupported
+            }
+
+            let parsed = try parseMediaPlaylist(playlist, baseURL: url)
+            guard !parsed.segments.isEmpty else {
+                throw DownloadError.invalidHLSPlaylist
+            }
+
+            if let mapURL = parsed.mapURL {
+                let (data, _) = try await requestData(url: mapURL)
+                try data.write(
+                    to: temporaryDirectory.appendingPathComponent("init.mp4"),
+                    options: .atomic
+                )
+            }
+
+            for (index, segment) in parsed.segments.enumerated() {
+                let (data, _) = try await requestData(url: segment.url)
+                let extensionName = parsed.mapURL == nil ? "ts" : "m4s"
+                let segmentURL = temporaryDirectory
+                    .appendingPathComponent(String(format: "segment-%05d", index))
+                    .appendingPathExtension(extensionName)
+                try data.write(to: segmentURL, options: .atomic)
+                progress[item.id] = min(
+                    0.95,
+                    Double(index + 1) / Double(parsed.segments.count)
+                )
+            }
+
+            let localPlaylist = makeLocalPlaylist(
+                parsed: parsed,
+                hasInitializationMap: parsed.mapURL != nil
+            )
+            try localPlaylist.write(
+                to: temporaryDirectory.appendingPathComponent("offline.m3u8"),
+                atomically: true,
+                encoding: .utf8
+            )
+            try fileManager.moveItem(at: temporaryDirectory, to: finalDirectory)
+
+            finish(
+                item: item,
+                localURL: finalDirectory.appendingPathComponent("offline.m3u8"),
+                note: "Disponible hors ligne."
+            )
+        } catch {
+            try? fileManager.removeItem(at: temporaryDirectory)
+            fail(item: item, error: error)
+        }
+    }
+
+    private struct ParsedHLSPlaylist {
+        let targetDuration: String
+        let mapURL: URL?
+        let segments: [HLSSegment]
+    }
+
+    private func parseMediaPlaylist(
+        _ playlist: String,
+        baseURL: URL
+    ) throws -> ParsedHLSPlaylist {
+        let lines = playlist.components(separatedBy: .newlines)
+        var targetDuration = "10"
+        var mapURL: URL?
+        var segments: [HLSSegment] = []
+        var pendingDuration: String?
+
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+
+            if line.hasPrefix("#EXT-X-TARGETDURATION:") {
+                targetDuration = String(line.dropFirst("#EXT-X-TARGETDURATION:".count))
+            } else if line.hasPrefix("#EXT-X-MAP:") {
+                guard let value = attribute(named: "URI", in: line),
+                      let resolved = signedURL(value, relativeTo: baseURL)
+                else {
+                    throw DownloadError.invalidHLSPlaylist
+                }
+                mapURL = resolved
+            } else if line.hasPrefix("#EXTINF:") {
+                pendingDuration = String(
+                    line.dropFirst("#EXTINF:".count)
+                ).split(separator: ",", maxSplits: 1).first.map(String.init)
+            } else if !line.hasPrefix("#"), let duration = pendingDuration,
+                      let segmentURL = signedURL(line, relativeTo: baseURL) {
+                segments.append(HLSSegment(duration: duration, url: segmentURL))
+                pendingDuration = nil
+            }
         }
 
-        task.taskDescription = item.id.uuidString
-        attachTask(task.taskIdentifier, to: item)
-        assetTasks[task.taskIdentifier] = item.id
-        task.resume()
+        guard playlist.hasPrefix("#EXTM3U"), !segments.isEmpty else {
+            throw DownloadError.invalidHLSPlaylist
+        }
+        return ParsedHLSPlaylist(
+            targetDuration: targetDuration,
+            mapURL: mapURL,
+            segments: segments
+        )
+    }
+
+    private func makeLocalPlaylist(
+        parsed: ParsedHLSPlaylist,
+        hasInitializationMap: Bool
+    ) -> String {
+        var lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            "#EXT-X-TARGETDURATION:\(parsed.targetDuration)",
+            "#EXT-X-MEDIA-SEQUENCE:0",
+            "#EXT-X-PLAYLIST-TYPE:VOD"
+        ]
+        if hasInitializationMap {
+            lines.append("#EXT-X-MAP:URI=\"init.mp4\"")
+        }
+        for (index, segment) in parsed.segments.enumerated() {
+            let extensionName = hasInitializationMap ? "m4s" : "ts"
+            lines.append("#EXTINF:\(segment.duration),")
+            lines.append("segment-\(String(format: "%05d", index)).\(extensionName)")
+        }
+        lines.append("#EXT-X-ENDLIST")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private func requestText(url: URL) async throws -> String {
+        let (data, _) = try await requestData(url: url)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw DownloadError.invalidHLSPlaylist
+        }
+        return text
+    }
+
+    private func requestData(url: URL) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        request.allHTTPHeaderFields = networkHeaders
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode)
+        else {
+            throw DownloadError.hlsSegmentFailed
+        }
+        return (data, httpResponse)
+    }
+
+    private func signedURL(_ value: String, relativeTo baseURL: URL) -> URL? {
+        guard let resolved = URL(string: value, relativeTo: baseURL)?.absoluteURL else {
+            return nil
+        }
+        guard resolved.query == nil,
+              let inheritedQuery = baseURL.query,
+              var components = URLComponents(
+                url: resolved,
+                resolvingAgainstBaseURL: false
+              )
+        else {
+            return resolved
+        }
+        components.query = inheritedQuery
+        return components.url ?? resolved
+    }
+
+    private func attribute(named name: String, in line: String) -> String? {
+        let prefix = "\(name)=\""
+        guard let start = line.range(of: prefix)?.upperBound,
+              let end = line[start...].firstIndex(of: "\"")
+        else {
+            return nil
+        }
+        return String(line[start..<end])
     }
 
     private func resumePendingConversions() {
