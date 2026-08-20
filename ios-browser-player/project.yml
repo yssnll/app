@@ -1,8 +1,4 @@
 name: StreamBrowser
-packages:
-  FFmpegKit:
-    url: https://github.com/jaywcjlove/ffmpeg-kit.git
-    from: 1.6.0
 options:
   deploymentTarget:
     iOS: "16.0"
@@ -15,8 +11,6 @@ targets:
   StreamBrowser:
     type: application
     platform: iOS
-    dependencies:
-      - package: FFmpegKit
     deploymentTarget: "16.0"
     sources:
       - path: Sources/StreamBrowserApp
