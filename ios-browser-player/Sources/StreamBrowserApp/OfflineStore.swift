@@ -93,11 +93,24 @@ final class OfflineStore: NSObject, ObservableObject {
         "Accept": "*/*"
     ]
     // Keep the CDN busy without creating an excessive number of requests.
-    private let maxConcurrentHLSSegmentDownloads = 10
+    // HLS segments are independent, so a moderate amount of parallelism
+    // noticeably reduces the total download time without changing quality.
+    private let maxConcurrentHLSSegmentDownloads = 16
+    private lazy var fileSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.waitsForConnectivity = true
+        configuration.allowsExpensiveNetworkAccess = true
+        configuration.allowsConstrainedNetworkAccess = true
+        configuration.httpMaximumConnectionsPerHost = 16
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
     private lazy var hlsSession: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
-        configuration.httpMaximumConnectionsPerHost = 10
+        configuration.allowsExpensiveNetworkAccess = true
+        configuration.allowsConstrainedNetworkAccess = true
+        configuration.httpMaximumConnectionsPerHost = 16
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }()
@@ -231,7 +244,10 @@ final class OfflineStore: NSObject, ObservableObject {
         Task {
             do {
                 progress[item.id] = 0.05
-                let (temporaryURL, response) = try await URLSession.shared.download(from: url)
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 60 * 60
+                request.allHTTPHeaderFields = networkHeaders
+                let (temporaryURL, response) = try await fileSession.download(for: request)
 
                 try fileManager.createDirectory(
                     at: offlineDirectory,
@@ -260,11 +276,24 @@ final class OfflineStore: NSObject, ObservableObject {
                     try? fileManager.removeItem(at: destination)
                     try fileManager.moveItem(at: temporaryURL, to: destination)
                 } else {
-                    try await exportToMP4(
-                        sourceURL: temporaryURL,
-                        destinationURL: destination
-                    )
-                    try? fileManager.removeItem(at: temporaryURL)
+                    // Passthrough remuxing preserves every byte of the
+                    // encoded audio/video and avoids a slow re-encode.
+                    do {
+                        try await exportToMP4(
+                            sourceURL: temporaryURL,
+                            destinationURL: destination,
+                            preferPassthrough: true
+                        )
+                        try? fileManager.removeItem(at: temporaryURL)
+                    } catch {
+                        // Keep the old conversion fallback for formats that
+                        // cannot be remuxed directly into an MP4 container.
+                        try await exportToMP4(
+                            sourceURL: temporaryURL,
+                            destinationURL: destination
+                        )
+                        try? fileManager.removeItem(at: temporaryURL)
+                    }
                 }
                 finish(item: item, localURL: destination)
             } catch {
@@ -629,12 +658,24 @@ final class OfflineStore: NSObject, ObservableObject {
         saveState()
     }
 
-    private func exportToMP4(sourceURL: URL, destinationURL: URL) async throws {
+    private func exportToMP4(
+        sourceURL: URL,
+        destinationURL: URL,
+        preferPassthrough: Bool = false
+    ) async throws {
         let asset = AVURLAsset(url: sourceURL)
-        try await exportToMP4(asset: asset, destinationURL: destinationURL)
+        try await exportToMP4(
+            asset: asset,
+            destinationURL: destinationURL,
+            preferPassthrough: preferPassthrough
+        )
     }
 
-    private func exportToMP4(asset: AVAsset, destinationURL: URL) async throws {
+    private func exportToMP4(
+        asset: AVAsset,
+        destinationURL: URL,
+        preferPassthrough: Bool = false
+    ) async throws {
         try fileManager.createDirectory(
             at: destinationURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -642,12 +683,18 @@ final class OfflineStore: NSObject, ObservableObject {
         try? fileManager.removeItem(at: destinationURL)
 
         let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
-        // Passthrough frequently fails for MPEG-TS -> MP4. Force a real
-        // transcode for downloaded HLS media instead of returning a broken
-        // or empty container.
-        let preset = compatiblePresets.contains(AVAssetExportPresetHighestQuality)
-            ? AVAssetExportPresetHighestQuality
-            : compatiblePresets.first ?? AVAssetExportPresetHighestQuality
+        let preset: String
+        if preferPassthrough,
+           compatiblePresets.contains(AVAssetExportPresetPassthrough) {
+            preset = AVAssetExportPresetPassthrough
+        } else {
+            // Passthrough frequently fails for MPEG-TS -> MP4. Force a real
+            // transcode for those streams instead of returning a broken
+            // or empty container.
+            preset = compatiblePresets.contains(AVAssetExportPresetHighestQuality)
+                ? AVAssetExportPresetHighestQuality
+                : compatiblePresets.first ?? AVAssetExportPresetHighestQuality
+        }
 
         guard let exporter = AVAssetExportSession(asset: asset, presetName: preset),
               exporter.supportedFileTypes.contains(.mp4)
