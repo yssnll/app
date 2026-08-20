@@ -92,6 +92,8 @@ final class OfflineStore: NSObject, ObservableObject {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Version/16.0 Mobile/15E148 Safari/604.1",
         "Accept": "*/*"
     ]
+    // Keep the CDN busy without creating too many requests at once.
+    private let maxConcurrentHLSSegmentDownloads = 6
     private var assetTasks: [Int: UUID] = [:]
     private var backgroundCompletionHandler: (() -> Void)?
 
@@ -291,18 +293,12 @@ final class OfflineStore: NSObject, ObservableObject {
                 )
             }
 
-            for (index, segment) in parsed.segments.enumerated() {
-                let (data, _) = try await requestData(url: segment.url)
-                let extensionName = parsed.mapURL == nil ? "ts" : "m4s"
-                let segmentURL = temporaryDirectory
-                    .appendingPathComponent(String(format: "segment-%05d", index))
-                    .appendingPathExtension(extensionName)
-                try data.write(to: segmentURL, options: .atomic)
-                progress[item.id] = min(
-                    0.95,
-                    Double(index + 1) / Double(parsed.segments.count)
-                )
-            }
+            let segmentURLs = try await downloadHLSSegments(
+                parsed.segments,
+                item: item,
+                in: temporaryDirectory,
+                extensionName: parsed.mapURL == nil ? "ts" : "m4s"
+            )
 
             // Build one local media file before asking AVFoundation to export.
             // This is more reliable than exporting a file:// HLS playlist,
@@ -317,11 +313,7 @@ final class OfflineStore: NSObject, ObservableObject {
                 if let initializationData {
                     try combinedHandle.write(contentsOf: initializationData)
                 }
-                for index in parsed.segments.indices {
-                    let extensionName = parsed.mapURL == nil ? "ts" : "m4s"
-                    let segmentURL = temporaryDirectory
-                        .appendingPathComponent(String(format: "segment-%05d", index))
-                        .appendingPathExtension(extensionName)
+                for segmentURL in segmentURLs {
                     try combinedHandle.write(contentsOf: Data(contentsOf: segmentURL))
                 }
                 try combinedHandle.close()
@@ -393,6 +385,66 @@ final class OfflineStore: NSObject, ObservableObject {
             try? fileManager.removeItem(at: finalDirectory)
             fail(item: item, error: error)
         }
+    }
+
+    private func downloadHLSSegments(
+        _ segments: [HLSSegment],
+        item: OfflineVideo,
+        in directory: URL,
+        extensionName: String
+    ) async throws -> [URL] {
+        var segmentURLs = [URL?](repeating: nil, count: segments.count)
+        var nextIndex = 0
+        var completedCount = 0
+
+        try await withThrowingTaskGroup(of: (Int, URL).self) { group in
+            let initialCount = min(
+                maxConcurrentHLSSegmentDownloads,
+                segments.count
+            )
+
+            for _ in 0..<initialCount {
+                let index = nextIndex
+                nextIndex += 1
+                let segment = segments[index]
+                let segmentURL = directory
+                    .appendingPathComponent(String(format: "segment-%05d", index))
+                    .appendingPathExtension(extensionName)
+
+                group.addTask {
+                    let (data, _) = try await self.requestData(url: segment.url)
+                    try data.write(to: segmentURL, options: .atomic)
+                    return (index, segmentURL)
+                }
+            }
+
+            while let (index, segmentURL) = try await group.next() {
+                segmentURLs[index] = segmentURL
+                completedCount += 1
+                progress[item.id] = min(
+                    0.95,
+                    Double(completedCount) / Double(segments.count)
+                )
+
+                guard nextIndex < segments.count else { continue }
+                let currentIndex = nextIndex
+                let segment = segments[currentIndex]
+                nextIndex += 1
+                let nextSegmentURL = directory
+                    .appendingPathComponent(
+                        String(format: "segment-%05d", currentIndex)
+                    )
+                    .appendingPathExtension(extensionName)
+
+                group.addTask {
+                    let (data, _) = try await self.requestData(url: segment.url)
+                    try data.write(to: nextSegmentURL, options: .atomic)
+                    return (currentIndex, nextSegmentURL)
+                }
+            }
+        }
+
+        return segmentURLs.compactMap { $0 }
     }
 
     private struct ParsedHLSPlaylist {
