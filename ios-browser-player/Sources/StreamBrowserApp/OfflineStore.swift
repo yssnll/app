@@ -19,6 +19,8 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
     let status: Status
     let errorMessage: String?
     let taskIdentifier: Int?
+    let playbackPosition: Double
+    let isRead: Bool
 
     init(
         id: UUID = UUID(),
@@ -29,7 +31,9 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
         downloadedAt: Date = Date(),
         status: Status = .downloading,
         errorMessage: String? = nil,
-        taskIdentifier: Int? = nil
+        taskIdentifier: Int? = nil,
+        playbackPosition: Double = 0,
+        isRead: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -40,6 +44,28 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
         self.status = status
         self.errorMessage = errorMessage
         self.taskIdentifier = taskIdentifier
+        self.playbackPosition = playbackPosition
+        self.isRead = isRead
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, sourceURL, localPath, qualityLabel, downloadedAt
+        case status, errorMessage, taskIdentifier, playbackPosition, isRead
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try values.decode(UUID.self, forKey: .id)
+        self.title = try values.decode(String.self, forKey: .title)
+        self.sourceURL = try values.decode(String.self, forKey: .sourceURL)
+        self.localPath = try values.decodeIfPresent(String.self, forKey: .localPath)
+        self.qualityLabel = try values.decode(String.self, forKey: .qualityLabel)
+        self.downloadedAt = try values.decode(Date.self, forKey: .downloadedAt)
+        self.status = try values.decode(Status.self, forKey: .status)
+        self.errorMessage = try values.decodeIfPresent(String.self, forKey: .errorMessage)
+        self.taskIdentifier = try values.decodeIfPresent(Int.self, forKey: .taskIdentifier)
+        self.playbackPosition = try values.decodeIfPresent(Double.self, forKey: .playbackPosition) ?? 0
+        self.isRead = try values.decodeIfPresent(Bool.self, forKey: .isRead) ?? false
     }
 }
 
@@ -115,6 +141,7 @@ final class OfflineStore: NSObject, ObservableObject {
         Self.shared = self
         prepareDocumentsStorage()
         loadState()
+        discoverLocalVideos()
         restoreBackgroundTasks()
         resumePendingConversions()
         for identifier in [
@@ -193,6 +220,48 @@ final class OfflineStore: NSObject, ObservableObject {
         return URL(fileURLWithPath: localPath)
     }
 
+    func updatePlaybackPosition(for videoID: UUID, position: Double) {
+        guard let index = videos.firstIndex(where: { $0.id == videoID }) else { return }
+        let current = videos[index]
+        let safePosition = max(0, position)
+        guard abs(current.playbackPosition - safePosition) >= 0.5 else { return }
+        videos[index] = OfflineVideo(
+            id: current.id,
+            title: current.title,
+            sourceURL: current.sourceURL,
+            localPath: current.localPath,
+            qualityLabel: current.qualityLabel,
+            downloadedAt: current.downloadedAt,
+            status: current.status,
+            errorMessage: current.errorMessage,
+            taskIdentifier: current.taskIdentifier,
+            playbackPosition: safePosition,
+            isRead: current.isRead
+        )
+        saveState()
+    }
+
+    func markAsRead(_ videoID: UUID) {
+        guard let index = videos.firstIndex(where: { $0.id == videoID }),
+              !videos[index].isRead
+        else { return }
+        let current = videos[index]
+        videos[index] = OfflineVideo(
+            id: current.id,
+            title: current.title,
+            sourceURL: current.sourceURL,
+            localPath: current.localPath,
+            qualityLabel: current.qualityLabel,
+            downloadedAt: current.downloadedAt,
+            status: current.status,
+            errorMessage: current.errorMessage,
+            taskIdentifier: current.taskIdentifier,
+            playbackPosition: current.playbackPosition,
+            isRead: true
+        )
+        saveState()
+    }
+
     static func receiveBackgroundEvents(
         for identifier: String,
         completionHandler: @escaping () -> Void
@@ -260,7 +329,9 @@ final class OfflineStore: NSObject, ObservableObject {
             downloadedAt: current.downloadedAt,
             status: current.status,
             errorMessage: current.errorMessage,
-            taskIdentifier: current.taskIdentifier
+            taskIdentifier: current.taskIdentifier,
+            playbackPosition: current.playbackPosition,
+            isRead: current.isRead
         )
         saveState()
     }
@@ -684,7 +755,9 @@ final class OfflineStore: NSObject, ObservableObject {
             downloadedAt: item.downloadedAt,
             status: item.status,
             errorMessage: item.errorMessage,
-            taskIdentifier: taskIdentifier
+            taskIdentifier: taskIdentifier,
+            playbackPosition: item.playbackPosition,
+            isRead: item.isRead
         )
         saveState()
     }
@@ -834,7 +907,9 @@ final class OfflineStore: NSObject, ObservableObject {
             downloadedAt: item.downloadedAt,
             status: status,
             errorMessage: errorMessage,
-            taskIdentifier: taskIdentifier
+            taskIdentifier: taskIdentifier,
+            playbackPosition: item.playbackPosition,
+            isRead: item.isRead
         )
         saveState()
     }
@@ -877,6 +952,10 @@ final class OfflineStore: NSObject, ObservableObject {
         applicationSupportDirectory.appendingPathComponent(stateFileName)
     }
 
+    private let supportedLocalVideoExtensions: Set<String> = [
+        "mp4", "m4v", "mov", "mkv", "avi", "webm", "mpeg", "mpg", "ts"
+    ]
+
     private func prepareDocumentsStorage() {
         do {
             try fileManager.createDirectory(
@@ -887,6 +966,62 @@ final class OfflineStore: NSObject, ObservableObject {
         } catch {
             // A later download reports the visible error if Documents is
             // unavailable. The directory is retried when that download starts.
+        }
+    }
+
+    /// Registers video files copied into the app's Documents folder through
+    /// the Files app. Downloads already present in the saved state are skipped.
+    private func discoverLocalVideos() {
+        guard let enumerator = fileManager.enumerator(
+            at: documentsDirectory,
+            includingPropertiesForKeys: [
+                .isRegularFileKey,
+                .creationDateKey,
+                .contentModificationDateKey
+            ],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        var discoveredNewVideo = false
+        for case let fileURL as URL in enumerator {
+            guard supportedLocalVideoExtensions.contains(
+                fileURL.pathExtension.lowercased()
+            ) else {
+                continue
+            }
+
+            guard let values = try? fileURL.resourceValues(
+                forKeys: [.isRegularFileKey, .creationDateKey, .contentModificationDateKey]
+            ), values.isRegularFile == true else {
+                continue
+            }
+
+            guard !videos.contains(where: { $0.localPath == fileURL.path }) else {
+                continue
+            }
+
+            let title = fileURL.deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: "_", with: " ")
+                .replacingOccurrences(of: "-", with: " ")
+            let date = values.creationDate ?? values.contentModificationDate ?? Date()
+            videos.insert(
+                OfflineVideo(
+                    title: title.isEmpty ? "Vidéo locale" : title,
+                    sourceURL: fileURL.absoluteString,
+                    localPath: fileURL.path,
+                    qualityLabel: "Fichier local",
+                    downloadedAt: date,
+                    status: .completed
+                ),
+                at: 0
+            )
+            discoveredNewVideo = true
+        }
+
+        if discoveredNewVideo {
+            saveState()
         }
     }
 
@@ -940,7 +1075,9 @@ final class OfflineStore: NSObject, ObservableObject {
                 downloadedAt: video.downloadedAt,
                 status: video.status,
                 errorMessage: video.errorMessage,
-                taskIdentifier: video.taskIdentifier
+                taskIdentifier: video.taskIdentifier,
+                playbackPosition: video.playbackPosition,
+                isRead: video.isRead
             )
         }
         if stateWasMigrated {
