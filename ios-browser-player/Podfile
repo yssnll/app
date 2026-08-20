@@ -3,5 +3,10 @@ platform :ios, '16.0'
 install! 'cocoapods', :disable_input_output_paths => true
 
 target 'StreamBrowser' do
-  # FFmpegKit is managed by Swift Package Manager in project.yml.
+  # Community-maintained prebuilt FFmpegKit iOS frameworks. The min bundle
+  # includes the FFmpeg codecs needed to decode MPEG-2 transport streams.
+  pod 'ffmpeg-mobile-min',
+      :git => 'https://github.com/maitrungduc1410/ffmpegkit-ios.git',
+      :tag => 'min/6.0.2',
+      :podspec => 'min/ffmpeg-mobile-min.podspec'
 end
