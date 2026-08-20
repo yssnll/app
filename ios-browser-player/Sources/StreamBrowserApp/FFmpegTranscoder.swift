@@ -28,16 +28,15 @@ enum FFmpegTranscoder {
         try? FileManager.default.removeItem(at: destinationURL)
 
         try await Task.detached(priority: .userInitiated) {
+            // Remuxer le flux évite de dépendre des encodeurs libx264/AAC,
+            // absents de certaines variantes minimales de FFmpegKit.
             let command = [
                 "-y",
                 "-i", shellQuote(sourceURL.path),
                 "-map", "0:v:0",
                 "-map", "0:a?",
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "23",
-                "-c:a", "aac",
-                "-b:a", "128k",
+                "-c", "copy",
+                "-bsf:a", "aac_adtstoasc",
                 "-movflags", "+faststart",
                 shellQuote(destinationURL.path)
             ].joined(separator: " ")
