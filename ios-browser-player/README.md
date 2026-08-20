@@ -24,17 +24,19 @@ xcodegen generate
 open StreamBrowser.xcodeproj
 ```
 
-Le projet utilise également FFmpegKit 6.0 via CocoaPods. Après
-`xcodegen generate`, installez la dépendance avec :
+Après `xcodegen generate`, installez les dépendances avec :
 
 ```bash
-pod install --repo-update
+pod install
 open StreamBrowser.xcworkspace
 ```
 
 Il faut ouvrir le fichier `.xcworkspace`, et non plus le `.xcodeproj`. Les flux
-HLS MPEG-TS sont transcodés en H.264/AAC dans un conteneur MP4 avant d'être
-ajoutés à la bibliothèque hors ligne.
+HLS MPEG-TS sont exportés par AVFoundation vers un conteneur MP4 lorsque le codec
+est pris en charge par iOS. Les flux HLS fMP4 restent dans leur playlist locale,
+format natif et fiable pour `AVPlayer`. FFmpegKit n'est plus utilisé afin de
+garder une compilation reproductible : le paquet CocoaPods officiel a été
+retiré de la distribution.
 
 Dans Xcode, remplacez `com.example.StreamBrowser` par votre propre identifiant de
 bundle et sélectionnez votre équipe Apple. Si vous changez cet identifiant, mettez
