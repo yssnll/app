@@ -54,7 +54,6 @@ struct BrowserView: UIViewRepresentable {
         var onVideoURL: (URL) -> Void
         var onOpenNewTab: (URL) -> Void
         var onNavigate: (URL) -> Void
-        private var transientPopups: [ObjectIdentifier: WKWebView] = [:]
 
         init(
             onLinkLongPress: @escaping (URL) -> Void,
@@ -185,27 +184,11 @@ struct BrowserView: UIViewRepresentable {
                 }
             }
 
-            // Anime-Sama attend que window.open() retourne une fenêtre
-            // valide pour comptabiliser sa publicité. On fournit une
-            // WKWebView invisible, puis on la vide et la libère aussitôt :
-            // aucun onglet publicitaire n'est ajouté à l'application.
-            let popup = WKWebView(frame: .zero, configuration: configuration)
-            popup.navigationDelegate = self
-            popup.uiDelegate = self
-            let popupID = ObjectIdentifier(popup)
-            transientPopups[popupID] = popup
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak popup] in
-                popup?.stopLoading()
-                if let blankURL = URL(string: "about:blank") {
-                    popup?.load(URLRequest(url: blankURL))
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    self?.transientPopups.removeValue(forKey: popupID)
-                }
-            }
-
-            return popup
+            // Les popups publicitaires scriptés sont bloqués. Le script
+            // JavaScript fournit lui-même un objet temporaire à
+            // window.open(), afin que le site comptabilise l'ouverture sans
+            // changer l'onglet Anime-Sama ni afficher about:blank.
+            return nil
         }
 
         private static func isVideoURL(_ url: URL) -> Bool {
@@ -270,10 +253,13 @@ struct BrowserView: UIViewRepresentable {
                     return null;
                 }
 
-                // Laisser WKWebView créer la fenêtre éphémère : Anime-Sama
-                // vérifie le retour de window.open() avant de déverrouiller
-                // ses boutons. Le delegate natif la ferme immédiatement.
-                return originalWindowOpen(destination, '_blank', features);
+                // Retourner un objet temporaire : Anime-Sama vérifie le
+                // retour de window.open() avant de déverrouiller ses boutons.
+                // Aucun onglet ni navigation native n'est créé.
+                return {
+                    closed: false,
+                    close: function() { this.closed = true; }
+                };
             };
         } catch (_) {}
 
