@@ -19,6 +19,7 @@ struct BrowserView: UIViewRepresentable {
             forMainFrameOnly: false
         )
         configuration.userContentController.addUserScript(popupBlocker)
+        configuration.userContentController.add(context.coordinator, name: "videoLongPress")
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.uiDelegate = context.coordinator
@@ -71,6 +72,22 @@ struct BrowserView: UIViewRepresentable {
             if let url = webView.url {
                 onNavigate(url)
             }
+        }
+
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard message.name == "videoLongPress",
+                  let value = message.body as? String,
+                  let url = URL(string: value),
+                  Self.isVideoURL(url)
+                    || value.contains(".m3u8")
+            else {
+                return
+            }
+
+            onLinkLongPress(url)
         }
 
         func webView(
@@ -206,6 +223,21 @@ struct BrowserView: UIViewRepresentable {
 
     private static let popupBlockerScript = """
     (() => {
+        // Sur un lecteur intégré, le lien de la page est celui de Anime-Sama,
+        // pas le flux vidéo. Récupérer la source réelle au long-press permet
+        // d'ouvrir directement le m3u8 dans le téléchargeur.
+        document.addEventListener('contextmenu', (event) => {
+            const video = event.target && event.target.closest
+                ? event.target.closest('video')
+                : null;
+            if (!video) return;
+            const source = video.currentSrc || video.src || '';
+            if (!source) return;
+            try {
+                window.webkit.messageHandlers.videoLongPress.postMessage(source);
+            } catch (_) {}
+        }, true);
+
         const isVideo = (value) => {
             try {
                 const url = new URL(value, document.baseURI);
