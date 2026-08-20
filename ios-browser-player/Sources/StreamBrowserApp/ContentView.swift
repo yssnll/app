@@ -6,11 +6,24 @@ private enum AppTab: Hashable {
     case offline
 }
 
+private struct BrowserTabState: Identifiable, Equatable {
+    let id: UUID
+    var url: URL?
+    var title: String
+
+    init(url: URL? = nil, title: String = "Nouvel onglet") {
+        self.id = UUID()
+        self.url = url
+        self.title = title
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var browserStore: BrowserStore
     @EnvironmentObject private var offlineStore: OfflineStore
     @State private var addressText = ""
-    @State private var currentWebURL: URL?
+    @State private var browserTabs: [BrowserTabState] = [BrowserTabState()]
+    @State private var selectedBrowserTabID: UUID?
     @State private var currentStreamURL: URL?
     @State private var selectedTab: AppTab = .browser
     @State private var showingHistory = false
@@ -51,6 +64,11 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(.indigo)
         .preferredColorScheme(.dark)
+        .onAppear {
+            if selectedBrowserTabID == nil {
+                selectedBrowserTabID = browserTabs[0].id
+            }
+        }
         .sheet(isPresented: $showingHistory) {
             HistoryView { item in
                 addressText = item.url
@@ -90,21 +108,38 @@ struct ContentView: View {
                     .padding(.top, 12)
                     .padding(.bottom, 10)
 
-                    if let currentWebURL {
-                        BrowserView(
-                            url: currentWebURL,
-                            onLinkLongPress: beginDownload(for:),
-                            onVideoURL: openVideoURL(_:)
-                        )
-                            .id(currentWebURL.absoluteString)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background(Color.black)
-                    } else {
-                        WelcomeView(onExampleSelected: { value in
-                            addressText = value
-                            openInput(value)
-                        })
+                    BrowserTabStrip(
+                        tabs: browserTabs,
+                        selectedID: selectedBrowserTabID,
+                        onSelect: selectBrowserTab,
+                        onAdd: { addBrowserTab() },
+                        onClose: closeBrowserTab
+                    )
+
+                    ZStack {
+                        ForEach(browserTabs) { tab in
+                            if let url = tab.url {
+                                BrowserView(
+                                    url: url,
+                                    onNavigate: { url in
+                                        updateBrowserTab(tab.id, url: url)
+                                    },
+                                    onLinkLongPress: beginDownload(for:),
+                                    onVideoURL: openVideoURL(_:),
+                                    onOpenNewTab: openNewBrowserTab(_:)
+                                )
+                                .opacity(tab.id == selectedBrowserTabID ? 1 : 0)
+                                .allowsHitTesting(tab.id == selectedBrowserTabID)
+                            } else if tab.id == selectedBrowserTabID {
+                                WelcomeView(onExampleSelected: { value in
+                                    addressText = value
+                                    openInput(value)
+                                })
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -269,8 +304,61 @@ struct ContentView: View {
         if browserStore.isVideo(url) {
             openVideoURL(url)
         } else {
-            currentWebURL = url
+            navigateActiveBrowserTab(to: url)
             selectedTab = .browser
+        }
+    }
+
+    private func selectBrowserTab(_ id: UUID) {
+        selectedBrowserTabID = id
+        addressText = browserTabs.first(where: { $0.id == id })?.url?.absoluteString ?? ""
+    }
+
+    private func addBrowserTab(url: URL? = nil) {
+        let tab = BrowserTabState(url: url, title: url?.host ?? "Nouvel onglet")
+        browserTabs.append(tab)
+        selectedBrowserTabID = tab.id
+        addressText = url?.absoluteString ?? ""
+    }
+
+    private func openNewBrowserTab(_ url: URL) {
+        guard browserStore.resolveInput(url.absoluteString) != nil else { return }
+        browserStore.addToHistory(url)
+        addBrowserTab(url: url)
+        selectedTab = .browser
+    }
+
+    private func navigateActiveBrowserTab(to url: URL) {
+        guard let id = selectedBrowserTabID ?? browserTabs.first?.id else {
+            addBrowserTab(url: url)
+            return
+        }
+        updateBrowserTab(id, url: url)
+        addressText = url.absoluteString
+    }
+
+    private func updateBrowserTab(_ id: UUID, url: URL) {
+        guard let index = browserTabs.firstIndex(where: { $0.id == id }) else { return }
+        browserTabs[index].url = url
+        browserTabs[index].title = url.host ?? "Nouvel onglet"
+        if selectedBrowserTabID == id {
+            addressText = url.absoluteString
+        }
+    }
+
+    private func closeBrowserTab(_ id: UUID) {
+        guard browserTabs.count > 1 else {
+            browserTabs[0] = BrowserTabState()
+            selectedBrowserTabID = browserTabs[0].id
+            addressText = ""
+            return
+        }
+        guard let index = browserTabs.firstIndex(where: { $0.id == id }) else { return }
+        let wasSelected = selectedBrowserTabID == id
+        browserTabs.remove(at: index)
+        if wasSelected {
+            let nextIndex = min(index, browserTabs.count - 1)
+            selectBrowserTab(browserTabs[nextIndex].id)
         }
     }
 
@@ -310,6 +398,72 @@ struct ContentView: View {
     private func title(for url: URL) -> String {
         let name = url.deletingPathExtension().lastPathComponent
         return name.isEmpty ? "Vidéo téléchargée" : name.replacingOccurrences(of: "-", with: " ")
+    }
+}
+
+private struct BrowserTabStrip: View {
+    let tabs: [BrowserTabState]
+    let selectedID: UUID?
+    let onSelect: (UUID) -> Void
+    let onAdd: () -> Void
+    let onClose: (UUID) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(tabs) { tab in
+                        HStack(spacing: 0) {
+                            Button {
+                                onSelect(tab.id)
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: tab.url == nil ? "safari" : "globe")
+                                        .font(.caption.weight(.semibold))
+                                    Text(tab.title)
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(1)
+                                }
+                                .foregroundStyle(tab.id == selectedID ? .white : .secondary)
+                                .padding(.leading, 10)
+                                .padding(.vertical, 8)
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                onClose(tab.id)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .frame(width: 28, height: 28)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(tab.id == selectedID ? .white : .secondary)
+                            .accessibilityLabel("Fermer \(tab.title)")
+                        }
+                        .padding(.trailing, 4)
+                        .background(
+                            tab.id == selectedID
+                                ? Color.indigo.opacity(0.8)
+                                : Color.white.opacity(0.07),
+                            in: Capsule()
+                        )
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+
+            Button(action: onAdd) {
+                Image(systemName: "plus")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .background(Color.white.opacity(0.08), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 16)
+            .accessibilityLabel("Nouvel onglet")
+        }
+        .padding(.bottom, 10)
     }
 }
 
