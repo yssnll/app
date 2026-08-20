@@ -335,17 +335,30 @@ final class OfflineStore: NSObject, ObservableObject {
             if parsed.mapURL == nil {
                 let destination = mp4URL(for: item.id)
                 markConverting(item: item, packageURL: combinedURL)
-                try await FFmpegTranscoder.convertTS(
-                    at: combinedURL,
-                    to: destination
-                )
+                do {
+                    try await FFmpegTranscoder.convertTS(
+                        at: combinedURL,
+                        to: destination
+                    )
 
-                try? fileManager.removeItem(at: temporaryDirectory)
-                finish(
-                    item: item,
-                    localURL: destination,
-                    note: "Vidéo convertie en MP4 et disponible hors ligne."
-                )
+                    try? fileManager.removeItem(at: temporaryDirectory)
+                    finish(
+                        item: item,
+                        localURL: destination,
+                        note: "Vidéo convertie en MP4 et disponible hors ligne."
+                    )
+                } catch {
+                    // Certains flux MPEG-TS ne peuvent pas être remuxés par
+                    // FFmpegKit minimal. Garder le TS téléchargé est préférable
+                    // à perdre tout le téléchargement : AVPlayer peut souvent
+                    // encore le lire localement.
+                    try? fileManager.removeItem(at: destination)
+                    finish(
+                        item: item,
+                        localURL: combinedURL,
+                        note: "Téléchargée hors ligne (format TS)."
+                    )
+                }
                 return
             }
 
