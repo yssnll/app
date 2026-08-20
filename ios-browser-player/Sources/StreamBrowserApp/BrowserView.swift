@@ -81,8 +81,7 @@ struct BrowserView: UIViewRepresentable {
             guard message.name == "videoLongPress",
                   let value = message.body as? String,
                   let url = URL(string: value),
-                  Self.isVideoURL(url)
-                    || value.contains(".m3u8")
+                  Self.isPotentialVideoURL(url)
             else {
                 return
             }
@@ -203,6 +202,20 @@ struct BrowserView: UIViewRepresentable {
             return videoExtensions.contains(url.pathExtension.lowercased())
         }
 
+        private static func isPotentialVideoURL(_ url: URL) -> Bool {
+            if isVideoURL(url) {
+                return true
+            }
+            let value = url.absoluteString.lowercased()
+            return ["mpd", "ts", "m4s", "aac"].contains(url.pathExtension.lowercased())
+                || value.contains("manifest")
+                || value.contains("playlist")
+                || value.contains("videoplayback")
+                || value.contains("video_url")
+                || value.contains("videourl")
+                || value.contains("stream")
+        }
+
         private static func isVideoResponse(_ response: URLResponse) -> Bool {
             guard let mimeType = response.mimeType?.lowercased() else { return false }
             return mimeType.contains("mpegurl")
@@ -216,6 +229,24 @@ struct BrowserView: UIViewRepresentable {
         // Sur un lecteur intégré, le lien de la page est celui de Anime-Sama,
         // pas le flux vidéo. Chercher dans plusieurs endroits rend la
         // récupération fiable avec les lecteurs qui masquent leur <video>.
+        const isLikelyVideoURL = (value) => {
+            if (typeof value !== 'string' || !value || /^(blob:|data:)/i.test(value)) {
+                return false;
+            }
+            return /(?:\\.(m3u8|mpd|mp4|mov|m4v|webm|mkv|avi|ts|m4s|aac)(?:[?#]|$))/i.test(value)
+                || /(?:manifest|master\\.m3u8|playlist|videoplayback|video_url|videoUrl|stream)/i.test(value)
+                || /(?:[?&](?:mime|type|format)=video(?:%2F|\\/)|[?&](?:mime|type)=(?:application%2Fx-mpegurl|application\\/x-mpegurl))/i.test(value);
+        };
+
+        const sendVideoURL = (value) => {
+            if (!isLikelyVideoURL(value)) return;
+            try {
+                const absoluteSource = new URL(value, document.baseURI).href;
+                if (/^(blob:|data:)/i.test(absoluteSource)) return;
+                window.webkit.messageHandlers.videoLongPress.postMessage(absoluteSource);
+            } catch (_) {}
+        };
+
         const findVideoSource = (target) => {
             const candidates = [];
             const video = target && target.closest ? target.closest('video') : null;
@@ -241,18 +272,59 @@ struct BrowserView: UIViewRepresentable {
 
             return candidates
                 .filter((value) => typeof value === 'string' && value.length > 0)
-                 .find((value) => /(?:\\.(m3u8|mp4|mov|m4v|webm|mkv|avi)(?:[?#]|$))/i.test(value));
+                .find(isLikelyVideoURL);
         };
 
         const sendVideoSource = (target) => {
             const source = findVideoSource(target);
             if (!source) return;
             try {
-                const absoluteSource = new URL(source, document.baseURI).href;
-                if (/^(blob:|data:)/i.test(absoluteSource)) return;
-                window.webkit.messageHandlers.videoLongPress.postMessage(absoluteSource);
+                sendVideoURL(source);
             } catch (_) {}
         };
+
+        // Les lecteurs modernes chargent souvent le manifeste ou les segments
+        // avec fetch/XHR : il n’existe alors aucun lien vidéo dans le DOM.
+        try {
+            const originalFetch = window.fetch;
+            window.fetch = function(input, init) {
+                const requestURL = typeof input === 'string' ? input : (input && input.url);
+                return originalFetch.apply(this, arguments).then((response) => {
+                    const contentType = response.headers && response.headers.get
+                        ? (response.headers.get('content-type') || '') : '';
+                    if (/^(video\\/|application\\/(?:vnd\\.apple\\.mpegurl|x-mpegurl|dash\\+xml))/i.test(contentType)
+                        || isLikelyVideoURL(requestURL)) {
+                        sendVideoURL(requestURL);
+                    }
+                    return response;
+                });
+            };
+        } catch (_) {}
+
+        try {
+            const originalOpen = XMLHttpRequest.prototype.open;
+            const originalSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, requestURL) {
+                this.__streamBrowserURL = requestURL;
+                return originalOpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function() {
+                this.addEventListener('load', () => {
+                    const contentType = this.getResponseHeader('content-type') || '';
+                    if (/^(video\\/|application\\/(?:vnd\\.apple\\.mpegurl|x-mpegurl|dash\\+xml))/i.test(contentType)
+                        || isLikelyVideoURL(this.__streamBrowserURL)) {
+                        sendVideoURL(this.__streamBrowserURL);
+                    }
+                });
+                return originalSend.apply(this, arguments);
+            };
+        } catch (_) {}
+
+        try {
+            performance.getEntriesByType('resource').forEach((entry) => {
+                if (isLikelyVideoURL(entry.name)) sendVideoURL(entry.name);
+            });
+        } catch (_) {}
 
         // Certains lecteurs injectent la vidéo et chargent sa source en
         // JavaScript sans déclencher de navigation ni de menu contextuel.
