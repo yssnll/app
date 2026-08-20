@@ -33,6 +33,7 @@ struct ContentView: View {
     @State private var isResolvingQualities = false
     @State private var downloadError: String?
     @State private var selectedOfflineVideo: OfflineVideo?
+    @State private var videoToRename: OfflineVideo?
 
     var body: some View {
         ZStack {
@@ -92,6 +93,12 @@ struct ContentView: View {
         }
         .sheet(item: $selectedOfflineVideo) { video in
             OfflinePlayerSheet(video: video, localURL: offlineStore.localURL(for: video))
+        }
+        .sheet(item: $videoToRename) { video in
+            RenameVideoSheet(video: video) { title in
+                offlineStore.rename(video, to: title)
+                videoToRename = nil
+            }
         }
     }
 
@@ -269,6 +276,9 @@ struct ContentView: View {
                                     onOpen: {
                                         guard offlineStore.localURL(for: video) != nil else { return }
                                         selectedOfflineVideo = video
+                                    },
+                                    onRename: {
+                                        videoToRename = video
                                     },
                                     onDelete: {
                                         offlineStore.remove(video)
@@ -737,6 +747,7 @@ private struct OfflineVideoRow: View {
     let video: OfflineVideo
     let progress: Double
     let onOpen: () -> Void
+    let onRename: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -822,8 +833,55 @@ private struct OfflineVideoRow: View {
         .buttonStyle(.plain)
         .disabled(video.status != .completed)
         .contextMenu {
+            Button("Modifier le titre", systemImage: "pencil", action: onRename)
             Button("Supprimer", role: .destructive, action: onDelete)
         }
+    }
+}
+
+private struct RenameVideoSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let video: OfflineVideo
+    let onSave: (String) -> Void
+    @State private var title: String
+
+    init(video: OfflineVideo, onSave: @escaping (String) -> Void) {
+        self.video = video
+        self.onSave = onSave
+        _title = State(initialValue: video.title)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Titre de la vidéo") {
+                    TextField("Titre", text: $title)
+                        .textInputAutocapitalization(.sentences)
+                        .submitLabel(.done)
+                }
+            }
+            .navigationTitle("Modifier le titre")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuler") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enregistrer") {
+                        let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !cleanedTitle.isEmpty else { return }
+                        onSave(cleanedTitle)
+                        dismiss()
+                    }
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .preferredColorScheme(.dark)
     }
 }
 
