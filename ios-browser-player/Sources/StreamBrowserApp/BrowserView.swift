@@ -54,7 +54,6 @@ struct BrowserView: UIViewRepresentable {
         var onVideoURL: (URL) -> Void
         var onOpenNewTab: (URL) -> Void
         var onNavigate: (URL) -> Void
-        private var detectedVideoURLs: Set<String> = []
 
         init(
             onLinkLongPress: @escaping (URL) -> Void,
@@ -86,9 +85,6 @@ struct BrowserView: UIViewRepresentable {
                 return
             }
 
-            let normalizedURL = url.absoluteString
-            guard !detectedVideoURLs.contains(normalizedURL) else { return }
-            detectedVideoURLs.insert(normalizedURL)
             onLinkLongPress(url)
         }
 
@@ -137,7 +133,6 @@ struct BrowserView: UIViewRepresentable {
 
             if navigationAction.targetFrame == nil {
                 if Self.isVideoURL(destinationURL) {
-                    detectedVideoURLs.insert(destinationURL.absoluteString)
                     onVideoURL(destinationURL)
                 } else if navigationAction.navigationType == .linkActivated {
                     onOpenNewTab(destinationURL)
@@ -151,7 +146,6 @@ struct BrowserView: UIViewRepresentable {
             }
 
             if Self.isVideoURL(destinationURL) {
-                detectedVideoURLs.insert(destinationURL.absoluteString)
                 onVideoURL(destinationURL)
                 decisionHandler(.cancel)
                 return
@@ -167,7 +161,6 @@ struct BrowserView: UIViewRepresentable {
         ) {
             if let responseURL = navigationResponse.response.url,
                Self.isVideoResponse(navigationResponse.response) {
-                detectedVideoURLs.insert(responseURL.absoluteString)
                 onVideoURL(responseURL)
                 decisionHandler(.cancel)
                 return
@@ -282,87 +275,6 @@ struct BrowserView: UIViewRepresentable {
                 sendVideoURL(source);
             } catch (_) {}
         };
-
-        // Les lecteurs modernes chargent souvent le manifeste ou les segments
-        // avec fetch/XHR : il n’existe alors aucun lien vidéo dans le DOM.
-        try {
-            const originalFetch = window.fetch;
-            window.fetch = function(input, init) {
-                const requestURL = typeof input === 'string' ? input : (input && input.url);
-                return originalFetch.apply(this, arguments).then((response) => {
-                    const contentType = response.headers && response.headers.get
-                        ? (response.headers.get('content-type') || '') : '';
-                    if (/^(video\\/|application\\/(?:vnd\\.apple\\.mpegurl|x-mpegurl|dash\\+xml))/i.test(contentType)
-                        || isLikelyVideoURL(requestURL)) {
-                        sendVideoURL(requestURL);
-                    }
-                    return response;
-                });
-            };
-        } catch (_) {}
-
-        try {
-            const originalOpen = XMLHttpRequest.prototype.open;
-            const originalSend = XMLHttpRequest.prototype.send;
-            XMLHttpRequest.prototype.open = function(method, requestURL) {
-                this.__streamBrowserURL = requestURL;
-                return originalOpen.apply(this, arguments);
-            };
-            XMLHttpRequest.prototype.send = function() {
-                this.addEventListener('load', () => {
-                    const contentType = this.getResponseHeader('content-type') || '';
-                    if (/^(video\\/|application\\/(?:vnd\\.apple\\.mpegurl|x-mpegurl|dash\\+xml))/i.test(contentType)
-                        || isLikelyVideoURL(this.__streamBrowserURL)) {
-                        sendVideoURL(this.__streamBrowserURL);
-                    }
-                });
-                return originalSend.apply(this, arguments);
-            };
-        } catch (_) {}
-
-        try {
-            performance.getEntriesByType('resource').forEach((entry) => {
-                if (isLikelyVideoURL(entry.name)) sendVideoURL(entry.name);
-            });
-        } catch (_) {}
-
-        // Certains lecteurs injectent la vidéo et chargent sa source en
-        // JavaScript sans déclencher de navigation ni de menu contextuel.
-        const observeVideoElement = (video) => {
-            if (!video || video.__streamBrowserObserved) return;
-            video.__streamBrowserObserved = true;
-            ['loadedmetadata', 'canplay', 'play'].forEach((eventName) => {
-                video.addEventListener(eventName, () => sendVideoSource(video), {passive: true});
-            });
-            sendVideoSource(video);
-        };
-
-        const scanForVideos = () => {
-            document.querySelectorAll('video').forEach(observeVideoElement);
-            document.querySelectorAll('video source, source').forEach((source) => {
-                const parent = source.closest ? source.closest('video') : null;
-                if (parent) observeVideoElement(parent);
-                else sendVideoSource(source);
-            });
-        };
-
-        const installVideoObserver = () => {
-            try {
-                if (!document.documentElement) return;
-                new MutationObserver(scanForVideos).observe(document.documentElement, {
-                    childList: true,
-                    subtree: true,
-                    attributes: true,
-                    attributeFilter: ['src', 'data-src', 'data-video']
-                });
-            } catch (_) {}
-        };
-        scanForVideos();
-        installVideoObserver();
-        document.addEventListener('DOMContentLoaded', () => {
-            scanForVideos();
-            installVideoObserver();
-        }, true);
 
         let longPressTimer = null;
         const cancelVideoLongPress = () => {
