@@ -15,7 +15,7 @@ des vidéos pour les regarder hors ligne.
 
 ## Stack
 
-- Swift 5, SwiftUI, WebKit et AVKit
+- Swift 5, SwiftUI, WebKit, AVKit et FFmpegKit 6.0 via CocoaPods
 - Déploiement cible : iOS 16+
 - Configuration applicative : `Resources/app-config.json`
 - Historique local : JSON via `Codable`
@@ -40,8 +40,9 @@ des vidéos pour les regarder hors ligne.
 - Les liens dont l'extension est `.m3u8` sont ouverts dans le lecteur AVPlayer.
 - Un appui long sur un lien `.m3u8`, `.mp4`, `.mov`, `.m4v` ou `.webm` ouvre le
   choix de qualité avant le téléchargement.
-- Les vidéos directes et les playlists HLS sont converties nativement en `.mp4`
-  avant d’être marquées comme disponibles hors ligne. Les fichiers finaux sont
+- Les vidéos directes sont converties nativement en `.mp4`. Les playlists HLS
+  MPEG-TS sont transcodées avec FFmpegKit en H.264/AAC dans un `.mp4` avant
+  d’être marquées comme disponibles hors ligne. Les fichiers finaux sont
   exportables depuis le lecteur via la feuille de partage iOS.
 - Les URLs temporaires ne sont pas stockées dans le code source : elles sont collées
   par l'utilisateur et peuvent apparaître dans l'historique local.
