@@ -191,26 +191,34 @@ struct BrowserView: UIViewRepresentable {
             }
         };
 
-        // Les régies utilisent window.open() pour ouvrir la publicité.
-        // Retourner null laisse le code du bouton continuer sans créer d’onglet.
+        // Anime-Sama utilise aussi window.open() pour ses boutons de navigation.
+        // On laisse passer les ouvertures utiles et on bloque uniquement les régies.
         try {
+            const originalWindowOpen = window.open.bind(window);
             window.open = function(url) {
-                if (url && isVideo(url)) {
-                    window.location.href = new URL(url, document.baseURI).href;
+                const value = String(url || '');
+                if (isBlockedAd(value)) return null;
+                if (value && isVideo(value)) {
+                    window.location.href = new URL(value, document.baseURI).href;
+                    return null;
                 }
-                return null;
+                return originalWindowOpen(value || 'about:blank', '_blank');
             };
         } catch (_) {}
 
-        // Empêche uniquement la navigation par défaut des liens publicitaires
-        // target=_blank. Les gestionnaires de clic du site restent exécutés.
+        function isBlockedAd(value) {
+            return /profitablecpmratenetwork|endlesshandbaglinked|d1zhmd1pxxxajf|d1pk6uu6wqrpce/i.test(String(value || ''));
+        }
+
+        // Les liens réels target=_blank doivent pouvoir atteindre le delegate natif.
+        // On neutralise seulement les placeholders publicitaires (#) et les régies connues.
         document.addEventListener('click', (event) => {
             const element = event.target && event.target.closest
                 ? event.target.closest('a[target="_blank"], area[target="_blank"]')
                 : null;
             if (!element) return;
             const href = element.href || element.getAttribute('href') || '';
-            if (!isVideo(href)) event.preventDefault();
+            if (!href || href === '#' || isBlockedAd(href)) event.preventDefault();
         }, true);
     })();
     """
