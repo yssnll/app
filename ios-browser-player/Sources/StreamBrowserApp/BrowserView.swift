@@ -207,19 +207,69 @@ struct BrowserView: UIViewRepresentable {
     private static let popupBlockerScript = """
     (() => {
         // Sur un lecteur intégré, le lien de la page est celui de Anime-Sama,
-        // pas le flux vidéo. Récupérer la source réelle au long-press permet
-        // d'ouvrir directement le m3u8 dans le téléchargeur.
-        document.addEventListener('contextmenu', (event) => {
-            const video = event.target && event.target.closest
-                ? event.target.closest('video')
-                : null;
-            if (!video) return;
-            const source = video.currentSrc || video.src || '';
+        // pas le flux vidéo. Chercher dans plusieurs endroits rend la
+        // récupération fiable avec les lecteurs qui masquent leur <video>.
+        const findVideoSource = (target) => {
+            const candidates = [];
+            const video = target && target.closest ? target.closest('video') : null;
+            if (video) {
+                candidates.push(video.currentSrc, video.src);
+            }
+
+            document.querySelectorAll('video, video source, source').forEach((element) => {
+                candidates.push(
+                    element.currentSrc,
+                    element.src,
+                    element.getAttribute('src'),
+                    element.getAttribute('data-src'),
+                    element.getAttribute('data-video')
+                );
+            });
+
+            try {
+                performance.getEntriesByType('resource').forEach((entry) => {
+                    candidates.push(entry.name);
+                });
+            } catch (_) {}
+
+            return candidates
+                .filter((value) => typeof value === 'string' && value.length > 0)
+                .find((value) => /(?:\.m3u8(?:[?#]|$)|\.mp4(?:[?#]|$))/i.test(value));
+        };
+
+        const sendVideoSource = (target) => {
+            const source = findVideoSource(target);
             if (!source) return;
             try {
                 window.webkit.messageHandlers.videoLongPress.postMessage(source);
             } catch (_) {}
+        };
+
+        let longPressTimer = null;
+        const cancelVideoLongPress = () => {
+            if (longPressTimer !== null) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+        };
+
+        const startVideoLongPress = (event) => {
+            cancelVideoLongPress();
+            longPressTimer = setTimeout(() => {
+                longPressTimer = null;
+                sendVideoSource(event.target);
+            }, 600);
+        };
+
+        document.addEventListener('contextmenu', (event) => {
+            sendVideoSource(event.target);
         }, true);
+        document.addEventListener('touchstart', startVideoLongPress, {capture: true, passive: true});
+        document.addEventListener('touchend', cancelVideoLongPress, true);
+        document.addEventListener('touchcancel', cancelVideoLongPress, true);
+        document.addEventListener('pointerdown', startVideoLongPress, true);
+        document.addEventListener('pointerup', cancelVideoLongPress, true);
+        document.addEventListener('pointercancel', cancelVideoLongPress, true);
 
         const isVideo = (value) => {
             try {
