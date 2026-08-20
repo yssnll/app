@@ -7,10 +7,6 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-packages:
-  ffmpeg-kit:
-    url: https://github.com/kingslay/FFmpegKit
-    branch: main
 targets:
   StreamBrowser:
     type: application
@@ -24,9 +20,6 @@ targets:
         buildPhase: resources
       - path: Resources/LaunchScreen.storyboard
         buildPhase: resources
-    dependencies:
-      - package: ffmpeg-kit
-        product: FFmpegKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.StreamBrowser
