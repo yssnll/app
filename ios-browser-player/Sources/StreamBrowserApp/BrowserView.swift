@@ -49,7 +49,7 @@ struct BrowserView: UIViewRepresentable {
         )
     }
 
-    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
         var onLinkLongPress: (URL) -> Void
         var onVideoURL: (URL) -> Void
         var onOpenNewTab: (URL) -> Void
