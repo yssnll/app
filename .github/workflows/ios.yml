@@ -13,49 +13,55 @@ jobs:
   simulator-build:
     name: Compile check
     runs-on: macos-15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install build tools
+        run: brew install xcodegen cocoapods
 
-      - name: Generate Xcode project
+      - name: Generate Xcode project and install pods
         working-directory: ios-browser-player
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          pod install --repo-update
 
       - name: Build for iOS Simulator
         working-directory: ios-browser-player
-        run: >
-          xcodebuild
-          -project StreamBrowser.xcodeproj
-          -scheme StreamBrowser
-          -sdk iphonesimulator
-          -destination 'generic/platform=iOS Simulator'
-          -configuration Debug
-          CODE_SIGNING_ALLOWED=NO
-          build
+        run: |
+          xcodebuild \
+            -workspace StreamBrowser.xcworkspace \
+            -scheme StreamBrowser \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
   unsigned-ipa:
     name: Build unsigned IPA
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install build tools
+        run: brew install xcodegen cocoapods
 
-      - name: Generate Xcode project
+      - name: Generate Xcode project and install pods
         working-directory: ios-browser-player
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          pod install --repo-update
 
       - name: Archive application without signing
         working-directory: ios-browser-player
         run: |
           xcodebuild \
-            -project StreamBrowser.xcodeproj \
+            -workspace StreamBrowser.xcworkspace \
             -scheme StreamBrowser \
             -sdk iphoneos \
             -configuration Release \
@@ -69,10 +75,14 @@ jobs:
         run: |
           rm -rf "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/export"
           mkdir -p "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/export"
+
           cp -R \
             "$RUNNER_TEMP/StreamBrowser.xcarchive/Products/Applications/StreamBrowser.app" \
             "$RUNNER_TEMP/Payload/StreamBrowser.app"
-          ditto -c -k --sequesterRsrc --keepParent \
+
+          ditto -c -k \
+            --sequesterRsrc \
+            --keepParent \
             "$RUNNER_TEMP/Payload" \
             "$RUNNER_TEMP/export/StreamBrowser-unsigned.ipa"
 
