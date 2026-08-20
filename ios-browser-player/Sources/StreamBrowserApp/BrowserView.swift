@@ -118,8 +118,12 @@ struct BrowserView: UIViewRepresentable {
             if navigationAction.targetFrame == nil {
                 if Self.isVideoURL(destinationURL) {
                     onVideoURL(destinationURL)
-                } else {
+                } else if navigationAction.navigationType == .linkActivated {
                     onOpenNewTab(destinationURL)
+                } else {
+                    // Les popups publicitaires de Anime-Sama sont ouverts par
+                    // un script (navigationType == .other). Ils ne doivent
+                    // pas devenir des onglets de l'application.
                 }
                 decisionHandler(.cancel)
                 return
@@ -160,7 +164,7 @@ struct BrowserView: UIViewRepresentable {
             if let destinationURL = navigationAction.request.url {
                 if Self.isVideoURL(destinationURL) {
                     onVideoURL(destinationURL)
-                } else {
+                } else if navigationAction.navigationType == .linkActivated {
                     onOpenNewTab(destinationURL)
                 }
             }
@@ -195,14 +199,22 @@ struct BrowserView: UIViewRepresentable {
         // On laisse passer les ouvertures utiles et on bloque uniquement les régies.
         try {
             const originalWindowOpen = window.open.bind(window);
-            window.open = function(url) {
+            window.open = function(url, target, features) {
                 const value = String(url || '');
                 if (isBlockedAd(value)) return null;
                 if (value && isVideo(value)) {
                     window.location.href = new URL(value, document.baseURI).href;
                     return null;
                 }
-                return originalWindowOpen(value || 'about:blank', '_blank');
+                // Respecter le second argument de window.open. Le site
+                // utilise notamment window.open(url, '_self') pour ses
+                // boutons internes ; le forcer vers _blank transformait ces
+                // boutons en faux onglets publicitaires.
+                return originalWindowOpen(
+                    value || 'about:blank',
+                    target || '_blank',
+                    features
+                );
             };
         } catch (_) {}
 
