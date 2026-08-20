@@ -54,6 +54,7 @@ struct BrowserView: UIViewRepresentable {
         var onVideoURL: (URL) -> Void
         var onOpenNewTab: (URL) -> Void
         var onNavigate: (URL) -> Void
+        private var detectedVideoURLs: Set<String> = []
 
         init(
             onLinkLongPress: @escaping (URL) -> Void,
@@ -86,6 +87,9 @@ struct BrowserView: UIViewRepresentable {
                 return
             }
 
+            let normalizedURL = url.absoluteString
+            guard !detectedVideoURLs.contains(normalizedURL) else { return }
+            detectedVideoURLs.insert(normalizedURL)
             onLinkLongPress(url)
         }
 
@@ -134,6 +138,7 @@ struct BrowserView: UIViewRepresentable {
 
             if navigationAction.targetFrame == nil {
                 if Self.isVideoURL(destinationURL) {
+                    detectedVideoURLs.insert(destinationURL.absoluteString)
                     onVideoURL(destinationURL)
                 } else if navigationAction.navigationType == .linkActivated {
                     onOpenNewTab(destinationURL)
@@ -147,6 +152,7 @@ struct BrowserView: UIViewRepresentable {
             }
 
             if Self.isVideoURL(destinationURL) {
+                detectedVideoURLs.insert(destinationURL.absoluteString)
                 onVideoURL(destinationURL)
                 decisionHandler(.cancel)
                 return
@@ -162,6 +168,7 @@ struct BrowserView: UIViewRepresentable {
         ) {
             if let responseURL = navigationResponse.response.url,
                Self.isVideoResponse(navigationResponse.response) {
+                detectedVideoURLs.insert(responseURL.absoluteString)
                 onVideoURL(responseURL)
                 decisionHandler(.cancel)
                 return
@@ -192,7 +199,7 @@ struct BrowserView: UIViewRepresentable {
         }
 
         private static func isVideoURL(_ url: URL) -> Bool {
-            let videoExtensions = ["m3u8", "mp4", "mov", "m4v", "webm"]
+            let videoExtensions = ["m3u8", "mp4", "mov", "m4v", "webm", "mkv", "avi"]
             return videoExtensions.contains(url.pathExtension.lowercased())
         }
 
@@ -234,16 +241,56 @@ struct BrowserView: UIViewRepresentable {
 
             return candidates
                 .filter((value) => typeof value === 'string' && value.length > 0)
-                .find((value) => /(?:\\.m3u8(?:[?#]|$)|\\.mp4(?:[?#]|$))/i.test(value));
+                 .find((value) => /(?:\\.(m3u8|mp4|mov|m4v|webm|mkv|avi)(?:[?#]|$))/i.test(value));
         };
 
         const sendVideoSource = (target) => {
             const source = findVideoSource(target);
             if (!source) return;
             try {
-                window.webkit.messageHandlers.videoLongPress.postMessage(source);
+                const absoluteSource = new URL(source, document.baseURI).href;
+                if (/^(blob:|data:)/i.test(absoluteSource)) return;
+                window.webkit.messageHandlers.videoLongPress.postMessage(absoluteSource);
             } catch (_) {}
         };
+
+        // Certains lecteurs injectent la vidéo et chargent sa source en
+        // JavaScript sans déclencher de navigation ni de menu contextuel.
+        const observeVideoElement = (video) => {
+            if (!video || video.__streamBrowserObserved) return;
+            video.__streamBrowserObserved = true;
+            ['loadedmetadata', 'canplay', 'play'].forEach((eventName) => {
+                video.addEventListener(eventName, () => sendVideoSource(video), {passive: true});
+            });
+            sendVideoSource(video);
+        };
+
+        const scanForVideos = () => {
+            document.querySelectorAll('video').forEach(observeVideoElement);
+            document.querySelectorAll('video source, source').forEach((source) => {
+                const parent = source.closest ? source.closest('video') : null;
+                if (parent) observeVideoElement(parent);
+                else sendVideoSource(source);
+            });
+        };
+
+        const installVideoObserver = () => {
+            try {
+                if (!document.documentElement) return;
+                new MutationObserver(scanForVideos).observe(document.documentElement, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['src', 'data-src', 'data-video']
+                });
+            } catch (_) {}
+        };
+        scanForVideos();
+        installVideoObserver();
+        document.addEventListener('DOMContentLoaded', () => {
+            scanForVideos();
+            installVideoObserver();
+        }, true);
 
         let longPressTimer = null;
         const cancelVideoLongPress = () => {
@@ -274,7 +321,7 @@ struct BrowserView: UIViewRepresentable {
         const isVideo = (value) => {
             try {
                 const url = new URL(value, document.baseURI);
-                return /\\.(m3u8|mp4|mov|m4v|webm)(?:$|[?#])/i.test(url.pathname + url.search);
+             return /\\.(m3u8|mp4|mov|m4v|webm|mkv|avi)(?:$|[?#])/i.test(url.pathname + url.search);
             } catch (_) {
                 return false;
             }
