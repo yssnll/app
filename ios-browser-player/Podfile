@@ -3,6 +3,5 @@ platform :ios, '16.0'
 install! 'cocoapods', :disable_input_output_paths => true
 
 target 'StreamBrowser' do
-  # The app intentionally has no third-party pod dependency. AVFoundation
-  # handles HLS, MP4, MOV, M4V and MPEG-TS playback on supported iOS codecs.
+  # FFmpegKit is managed by Swift Package Manager in project.yml.
 end
