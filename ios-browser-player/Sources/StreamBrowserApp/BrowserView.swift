@@ -2,9 +2,11 @@ import SwiftUI
 import WebKit
 
 struct BrowserView: UIViewRepresentable {
-    let url: URL
+    let url: URL?
+    let onNavigate: (URL) -> Void
     let onLinkLongPress: (URL) -> Void
     let onVideoURL: (URL) -> Void
+    let onOpenNewTab: (URL) -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -22,34 +24,52 @@ struct BrowserView: UIViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        webView.load(URLRequest(url: url))
+        if let url {
+            webView.load(URLRequest(url: url))
+        }
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.onLinkLongPress = onLinkLongPress
         context.coordinator.onVideoURL = onVideoURL
-        guard webView.url?.absoluteString != url.absoluteString else { return }
+        context.coordinator.onOpenNewTab = onOpenNewTab
+        context.coordinator.onNavigate = onNavigate
+        guard let url, webView.url?.absoluteString != url.absoluteString else { return }
         webView.load(URLRequest(url: url))
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onLinkLongPress: onLinkLongPress,
-            onVideoURL: onVideoURL
+            onVideoURL: onVideoURL,
+            onOpenNewTab: onOpenNewTab,
+            onNavigate: onNavigate
         )
     }
 
     final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate {
         var onLinkLongPress: (URL) -> Void
         var onVideoURL: (URL) -> Void
+        var onOpenNewTab: (URL) -> Void
+        var onNavigate: (URL) -> Void
 
         init(
             onLinkLongPress: @escaping (URL) -> Void,
-            onVideoURL: @escaping (URL) -> Void
+            onVideoURL: @escaping (URL) -> Void,
+            onOpenNewTab: @escaping (URL) -> Void,
+            onNavigate: @escaping (URL) -> Void
         ) {
             self.onLinkLongPress = onLinkLongPress
             self.onVideoURL = onVideoURL
+            self.onOpenNewTab = onOpenNewTab
+            self.onNavigate = onNavigate
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if let url = webView.url {
+                onNavigate(url)
+            }
         }
 
         func webView(
@@ -58,7 +78,26 @@ struct BrowserView: UIViewRepresentable {
             completionHandler: @escaping (UIContextMenuConfiguration?) -> Void
         ) {
             if let linkURL = elementInfo.linkURL {
-                onLinkLongPress(linkURL)
+                let configuration = UIContextMenuConfiguration(
+                    identifier: nil,
+                    previewProvider: nil
+                ) { _ in
+                    let openAction = UIAction(
+                        title: "Ouvrir dans un nouvel onglet",
+                        image: UIImage(systemName: "plus.square.on.square")
+                    ) { [weak self] _ in
+                        self?.onOpenNewTab(linkURL)
+                    }
+                    let downloadAction = UIAction(
+                        title: "Télécharger le lien",
+                        image: UIImage(systemName: "arrow.down.circle")
+                    ) { [weak self] _ in
+                        self?.onLinkLongPress(linkURL)
+                    }
+                    return UIMenu(title: "", children: [openAction, downloadAction])
+                }
+                completionHandler(configuration)
+                return
             }
             completionHandler(nil)
         }
@@ -79,6 +118,8 @@ struct BrowserView: UIViewRepresentable {
             if navigationAction.targetFrame == nil {
                 if Self.isVideoURL(destinationURL) {
                     onVideoURL(destinationURL)
+                } else {
+                    onOpenNewTab(destinationURL)
                 }
                 decisionHandler(.cancel)
                 return
@@ -116,9 +157,12 @@ struct BrowserView: UIViewRepresentable {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if let destinationURL = navigationAction.request.url,
-               Self.isVideoURL(destinationURL) {
-                onVideoURL(destinationURL)
+            if let destinationURL = navigationAction.request.url {
+                if Self.isVideoURL(destinationURL) {
+                    onVideoURL(destinationURL)
+                } else {
+                    onOpenNewTab(destinationURL)
+                }
             }
             return nil
         }
