@@ -11,6 +11,13 @@ struct BrowserView: UIViewRepresentable {
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
 
+        let popupBlocker = WKUserScript(
+            source: Self.popupBlockerScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        configuration.userContentController.addUserScript(popupBlocker)
+
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.uiDelegate = context.coordinator
         webView.navigationDelegate = context.coordinator
@@ -86,6 +93,21 @@ struct BrowserView: UIViewRepresentable {
             decisionHandler(.allow)
         }
 
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            if let responseURL = navigationResponse.response.url,
+               Self.isVideoResponse(navigationResponse.response) {
+                onVideoURL(responseURL)
+                decisionHandler(.cancel)
+                return
+            }
+
+            decisionHandler(.allow)
+        }
+
         // Retourner nil bloque aussi les window.open qui arrivent sans
         // navigationAction exploitable, au lieu d'ouvrir une fenêtre publicitaire.
         func webView(
@@ -105,5 +127,47 @@ struct BrowserView: UIViewRepresentable {
             let videoExtensions = ["m3u8", "mp4", "mov", "m4v", "webm"]
             return videoExtensions.contains(url.pathExtension.lowercased())
         }
+
+        private static func isVideoResponse(_ response: URLResponse) -> Bool {
+            guard let mimeType = response.mimeType?.lowercased() else { return false }
+            return mimeType.contains("mpegurl")
+                || mimeType.contains("mp4")
+                || mimeType.hasPrefix("video/")
+        }
     }
+
+    private static let popupBlockerScript = """
+    (() => {
+        const isVideo = (value) => {
+            try {
+                const url = new URL(value, document.baseURI);
+                return /\\.(m3u8|mp4|mov|m4v|webm)(?:$|[?#])/i.test(url.pathname + url.search);
+            } catch (_) {
+                return false;
+            }
+        };
+
+        // Les régies utilisent window.open() pour ouvrir la publicité.
+        // Retourner null laisse le code du bouton continuer sans créer d’onglet.
+        try {
+            window.open = function(url) {
+                if (url && isVideo(url)) {
+                    window.location.href = new URL(url, document.baseURI).href;
+                }
+                return null;
+            };
+        } catch (_) {}
+
+        // Empêche uniquement la navigation par défaut des liens publicitaires
+        // target=_blank. Les gestionnaires de clic du site restent exécutés.
+        document.addEventListener('click', (event) => {
+            const element = event.target && event.target.closest
+                ? event.target.closest('a[target="_blank"], area[target="_blank"]')
+                : null;
+            if (!element) return;
+            const href = element.href || element.getAttribute('href') || '';
+            if (!isVideo(href)) event.preventDefault();
+        }, true);
+    })();
+    """
 }
