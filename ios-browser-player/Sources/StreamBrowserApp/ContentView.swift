@@ -769,8 +769,15 @@ private struct OfflineVideoRow: View {
                 .frame(width: 58, height: 58)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(video.title)
-                        .font(.headline)
+                     HStack(spacing: 6) {
+                         if !video.isRead {
+                             Circle()
+                                 .fill(.indigo)
+                                 .frame(width: 8, height: 8)
+                         }
+                         Text(video.title)
+                             .font(.headline.weight(video.isRead ? .regular : .bold))
+                     }
                         .foregroundStyle(.primary)
                         .lineLimit(2)
 
@@ -780,12 +787,19 @@ private struct OfflineVideoRow: View {
 
                     switch video.status {
                     case .completed:
-                        Label(
-                            video.errorMessage ?? "Disponible hors ligne",
-                            systemImage: "checkmark.circle.fill"
-                        )
-                            .font(.caption)
-                            .foregroundStyle(.mint)
+                         HStack(spacing: 8) {
+                             Label(
+                                 video.errorMessage ?? "Disponible hors ligne",
+                                 systemImage: "checkmark.circle.fill"
+                             )
+                             if !video.isRead {
+                                 Text("Non lue")
+                                     .font(.caption.weight(.semibold))
+                                     .foregroundStyle(.indigo)
+                             }
+                         }
+                         .font(.caption)
+                         .foregroundStyle(.mint)
                     case .downloading:
                         ProgressView(value: progress)
                             .tint(.indigo)
@@ -887,6 +901,7 @@ private struct RenameVideoSheet: View {
 
 private struct OfflinePlayerSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var offlineStore: OfflineStore
 
     let video: OfflineVideo
     let localURL: URL?
@@ -897,7 +912,19 @@ private struct OfflinePlayerSheet: View {
                 Color.black.ignoresSafeArea()
 
                 if let localURL {
-                    HLSPlayerView(url: localURL)
+                    HLSPlayerView(
+                        url: localURL,
+                        initialPosition: video.playbackPosition,
+                        onPositionChanged: { position in
+                            offlineStore.updatePlaybackPosition(
+                                for: video.id,
+                                position: position
+                            )
+                        },
+                        onPlaybackStarted: {
+                            offlineStore.markAsRead(video.id)
+                        }
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     EmptyStateView(
