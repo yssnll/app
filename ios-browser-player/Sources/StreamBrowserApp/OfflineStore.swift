@@ -46,6 +46,7 @@ struct OfflineVideo: Codable, Identifiable, Hashable {
 @MainActor
 final class OfflineStore: NSObject, ObservableObject {
     private static let backgroundSessionIdentifier = "com.example.StreamBrowser.offline-assets"
+    private static let fileBackgroundSessionIdentifier = "com.example.StreamBrowser.file-downloads"
     static weak var shared: OfflineStore?
     private static var pendingBackgroundCompletionHandlers: [
         String: () -> Void
@@ -96,15 +97,6 @@ final class OfflineStore: NSObject, ObservableObject {
     // HLS segments are independent, so a moderate amount of parallelism
     // noticeably reduces the total download time without changing quality.
     private let maxConcurrentHLSSegmentDownloads = 16
-    private lazy var fileSession: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.waitsForConnectivity = true
-        configuration.allowsExpensiveNetworkAccess = true
-        configuration.allowsConstrainedNetworkAccess = true
-        configuration.httpMaximumConnectionsPerHost = 16
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: configuration)
-    }()
     private lazy var hlsSession: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
@@ -115,6 +107,7 @@ final class OfflineStore: NSObject, ObservableObject {
         return URLSession(configuration: configuration)
     }()
     private var assetTasks: [Int: UUID] = [:]
+    private var fileTasks: [Int: UUID] = [:]
     private var backgroundCompletionHandler: (() -> Void)?
 
     override init() {
@@ -124,12 +117,17 @@ final class OfflineStore: NSObject, ObservableObject {
         loadState()
         restoreBackgroundTasks()
         resumePendingConversions()
-        if let completionHandler = Self.pendingBackgroundCompletionHandlers
-            .removeValue(forKey: Self.backgroundSessionIdentifier) {
-            handleBackgroundEvents(
-                for: Self.backgroundSessionIdentifier,
-                completionHandler: completionHandler
-            )
+        for identifier in [
+            Self.backgroundSessionIdentifier,
+            Self.fileBackgroundSessionIdentifier
+        ] {
+            if let completionHandler = Self.pendingBackgroundCompletionHandlers
+                .removeValue(forKey: identifier) {
+                handleBackgroundEvents(
+                    for: identifier,
+                    completionHandler: completionHandler
+                )
+            }
         }
     }
 
@@ -144,6 +142,25 @@ final class OfflineStore: NSObject, ObservableObject {
         return AVAssetDownloadURLSession(
             configuration: configuration,
             assetDownloadDelegate: self,
+            delegateQueue: OperationQueue.main
+        )
+    }()
+
+    private lazy var fileBackgroundSession: URLSession = {
+        let configuration = URLSessionConfiguration.background(
+            withIdentifier: Self.fileBackgroundSessionIdentifier
+        )
+        // The system URLSession daemon owns this transfer, so it continues
+        // while the app is suspended or the phone is locked.
+        configuration.isDiscretionary = false
+        configuration.sessionSendsLaunchEvents = true
+        configuration.waitsForConnectivity = true
+        configuration.allowsExpensiveNetworkAccess = true
+        configuration.allowsConstrainedNetworkAccess = true
+        configuration.httpAdditionalHeaders = networkHeaders
+        return URLSession(
+            configuration: configuration,
+            delegate: self,
             delegateQueue: OperationQueue.main
         )
     }()
@@ -180,7 +197,9 @@ final class OfflineStore: NSObject, ObservableObject {
         for identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        guard identifier == backgroundSessionIdentifier else {
+        guard identifier == backgroundSessionIdentifier
+                || identifier == fileBackgroundSessionIdentifier
+        else {
             completionHandler()
             return
         }
@@ -199,13 +218,19 @@ final class OfflineStore: NSObject, ObservableObject {
         for identifier: String,
         completionHandler: @escaping () -> Void
     ) {
-        guard identifier == Self.backgroundSessionIdentifier else {
+        guard identifier == Self.backgroundSessionIdentifier
+                || identifier == Self.fileBackgroundSessionIdentifier
+        else {
             completionHandler()
             return
         }
 
         backgroundCompletionHandler = completionHandler
-        _ = configuredAssetSession
+        if identifier == Self.backgroundSessionIdentifier {
+            _ = configuredAssetSession
+        } else {
+            _ = fileBackgroundSession
+        }
     }
 
     func remove(_ video: OfflineVideo) {
@@ -241,64 +266,70 @@ final class OfflineStore: NSObject, ObservableObject {
     }
 
     private func startFileDownload(item: OfflineVideo, url: URL) {
-        Task {
-            do {
-                progress[item.id] = 0.05
-                var request = URLRequest(url: url)
-                request.timeoutInterval = 60 * 60
-                request.allHTTPHeaderFields = networkHeaders
-                let (temporaryURL, response) = try await fileSession.download(for: request)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 60 * 60
+        request.allHTTPHeaderFields = networkHeaders
+        let task = fileBackgroundSession.downloadTask(with: request)
+        task.taskDescription = item.id.uuidString
+        fileTasks[task.taskIdentifier] = item.id
+        attachTask(task.taskIdentifier, to: item)
+        progress[item.id] = 0
+        task.resume()
+    }
 
-                try fileManager.createDirectory(
-                    at: offlineDirectory,
-                    withIntermediateDirectories: true
-                )
+    private func processFileDownload(
+        item: OfflineVideo,
+        temporaryURL: URL,
+        response: URLResponse?
+    ) async {
+        do {
+            try fileManager.createDirectory(
+                at: offlineDirectory,
+                withIntermediateDirectories: true
+            )
 
-                let destination = offlineDirectory
-                    .appendingPathComponent(item.id.uuidString)
-                    .appendingPathExtension("mp4")
+            let destination = mp4URL(for: item.id)
+            let mimeType = response?.mimeType
+                .map { value in
+                    String(value.split(
+                        separator: ";",
+                        maxSplits: 1,
+                        omittingEmptySubsequences: true
+                    ).first ?? "")
+                }?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let sourceIsAlreadyMP4 = URL(string: item.sourceURL)?
+                .pathExtension.lowercased() == "mp4"
+                || mimeType == "video/mp4"
 
-                let mimeType = response.mimeType
-                    .map { value in
-                        String(value.split(
-                            separator: ";",
-                            maxSplits: 1,
-                            omittingEmptySubsequences: true
-                        ).first ?? "")
-                    }?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                let sourceIsAlreadyMP4 = url.pathExtension.lowercased() == "mp4"
-                    || mimeType == "video/mp4"
-
-                progress[item.id] = 0.55
-                if sourceIsAlreadyMP4 {
-                    try? fileManager.removeItem(at: destination)
-                    try fileManager.moveItem(at: temporaryURL, to: destination)
-                } else {
-                    // Passthrough remuxing preserves every byte of the
-                    // encoded audio/video and avoids a slow re-encode.
-                    do {
-                        try await exportToMP4(
-                            sourceURL: temporaryURL,
-                            destinationURL: destination,
-                            preferPassthrough: true
-                        )
-                        try? fileManager.removeItem(at: temporaryURL)
-                    } catch {
-                        // Keep the old conversion fallback for formats that
-                        // cannot be remuxed directly into an MP4 container.
-                        try await exportToMP4(
-                            sourceURL: temporaryURL,
-                            destinationURL: destination
-                        )
-                        try? fileManager.removeItem(at: temporaryURL)
-                    }
+            progress[item.id] = 0.55
+            if sourceIsAlreadyMP4 {
+                try? fileManager.removeItem(at: destination)
+                try fileManager.moveItem(at: temporaryURL, to: destination)
+            } else {
+                // Passthrough remuxing preserves every byte of the encoded
+                // audio/video and avoids a slow re-encode.
+                do {
+                    try await exportToMP4(
+                        sourceURL: temporaryURL,
+                        destinationURL: destination,
+                        preferPassthrough: true
+                    )
+                    try? fileManager.removeItem(at: temporaryURL)
+                } catch {
+                    // Keep the conversion fallback for formats that cannot
+                    // be remuxed directly into an MP4 container.
+                    try await exportToMP4(
+                        sourceURL: temporaryURL,
+                        destinationURL: destination
+                    )
+                    try? fileManager.removeItem(at: temporaryURL)
                 }
-                finish(item: item, localURL: destination)
-            } catch {
-                fail(item: item, error: error)
             }
+            finish(item: item, localURL: destination)
+        } catch {
+            fail(item: item, error: error)
         }
     }
 
@@ -968,6 +999,24 @@ final class OfflineStore: NSObject, ObservableObject {
                 }
             }
         }
+
+        fileBackgroundSession.getAllTasks { tasks in
+            let taskIDs = tasks.reduce(into: [Int: UUID]()) { result, task in
+                guard let id = task.taskDescription.flatMap(UUID.init(uuidString:))
+                    ?? self.fileTasks[task.taskIdentifier]
+                else {
+                    return
+                }
+                result[task.taskIdentifier] = id
+            }
+
+            Task { @MainActor in
+                self.fileTasks.merge(taskIDs) { _, latest in latest }
+                for video in self.videos where video.status == .downloading {
+                    self.progress[video.id] = 0
+                }
+            }
+        }
     }
 
     private func saveState() {
@@ -994,7 +1043,72 @@ final class OfflineStore: NSObject, ObservableObject {
     }
 }
 
-extension OfflineStore: AVAssetDownloadDelegate {
+extension OfflineStore: AVAssetDownloadDelegate, URLSessionDownloadDelegate {
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard session.configuration.identifier
+                == Self.fileBackgroundSessionIdentifier,
+              totalBytesExpectedToWrite > 0
+        else {
+            return
+        }
+
+        let nextProgress = min(
+            max(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite), 0),
+            0.99
+        )
+        let taskIdentifier = downloadTask.taskIdentifier
+        let taskDescription = downloadTask.taskDescription
+        Task { @MainActor in
+            guard let id = self.fileID(
+                from: taskDescription,
+                taskIdentifier: taskIdentifier
+            )
+            else {
+                return
+            }
+            self.progress[id] = nextProgress
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard session.configuration.identifier
+                == Self.fileBackgroundSessionIdentifier
+        else {
+            return
+        }
+
+        let taskIdentifier = downloadTask.taskIdentifier
+        let taskDescription = downloadTask.taskDescription
+        let response = downloadTask.response
+        Task { @MainActor in
+            guard let id = self.fileID(
+                from: taskDescription,
+                taskIdentifier: taskIdentifier
+            ),
+            let item = self.videos.first(where: { $0.id == id })
+            else {
+                return
+            }
+
+            self.fileTasks[taskIdentifier] = nil
+            await self.processFileDownload(
+                item: item,
+                temporaryURL: location,
+                response: response
+            )
+        }
+    }
+
     nonisolated func urlSession(
         _ session: AVAssetDownloadURLSession,
         assetDownloadTask: AVAssetDownloadTask,
@@ -1089,6 +1203,53 @@ extension OfflineStore: AVAssetDownloadDelegate {
         let taskDescription = task.taskDescription
 
         Task { @MainActor in
+            if session.configuration.identifier
+                    == Self.fileBackgroundSessionIdentifier {
+                guard let id = self.fileID(
+                    from: taskDescription,
+                    taskIdentifier: taskIdentifier
+                ),
+                let item = self.videos.first(where: { $0.id == id })
+                else {
+                    return
+                }
+
+                // Background URLSession normally waits for connectivity
+                // itself. If iOS reports a transient disconnect, recreate
+                // the task with resume data and keep the item in "downloading"
+                // instead of showing a failure to the user.
+                guard self.isTemporaryNetworkError(error) else {
+                    self.fileTasks[taskIdentifier] = nil
+                    self.fail(item: item, error: error)
+                    return
+                }
+
+                let replacement: URLSessionDownloadTask
+                if let resumeData = (error as NSError).userInfo[
+                    NSURLSessionDownloadTaskResumeData
+                ] as? Data {
+                    replacement = self.fileBackgroundSession
+                        .downloadTask(withResumeData: resumeData)
+                } else {
+                    guard let sourceURL = URL(string: item.sourceURL) else {
+                        self.fileTasks[taskIdentifier] = nil
+                        self.fail(item: item, error: error)
+                        return
+                    }
+                    var request = URLRequest(url: sourceURL)
+                    request.timeoutInterval = 60 * 60
+                    request.allHTTPHeaderFields = self.networkHeaders
+                    replacement = self.fileBackgroundSession
+                        .downloadTask(with: request)
+                }
+                replacement.taskDescription = item.id.uuidString
+                self.fileTasks[replacement.taskIdentifier] = id
+                self.attachTask(replacement.taskIdentifier, to: item)
+                self.progress[id] = self.progress[id] ?? 0
+                replacement.resume()
+                return
+            }
+
             guard let id = self.id(
                 from: taskDescription,
                 taskIdentifier: taskIdentifier
@@ -1117,5 +1278,31 @@ extension OfflineStore: AVAssetDownloadDelegate {
             return id
         }
         return assetTasks[taskIdentifier]
+    }
+
+    private func fileID(
+        from taskDescription: String?,
+        taskIdentifier: Int
+    ) -> UUID? {
+        if let taskDescription,
+           let id = UUID(uuidString: taskDescription) {
+            return id
+        }
+        return fileTasks[taskIdentifier]
+    }
+
+    private func isTemporaryNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else {
+            return false
+        }
+        return [
+            .notConnectedToInternet,
+            .networkConnectionLost,
+            .timedOut,
+            .cannotConnectToHost,
+            .cannotFindHost,
+            .dnsLookupFailed,
+            .resourceUnavailable
+        ].contains(urlError.code)
     }
 }
