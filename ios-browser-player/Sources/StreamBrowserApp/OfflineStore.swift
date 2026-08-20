@@ -92,8 +92,15 @@ final class OfflineStore: NSObject, ObservableObject {
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 Version/16.0 Mobile/15E148 Safari/604.1",
         "Accept": "*/*"
     ]
-    // Keep the CDN busy without creating too many requests at once.
-    private let maxConcurrentHLSSegmentDownloads = 6
+    // Keep the CDN busy without creating an excessive number of requests.
+    private let maxConcurrentHLSSegmentDownloads = 10
+    private lazy var hlsSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = true
+        configuration.httpMaximumConnectionsPerHost = 10
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
     private var assetTasks: [Int: UUID] = [:]
     private var backgroundCompletionHandler: (() -> Void)?
 
@@ -532,7 +539,7 @@ final class OfflineStore: NSObject, ObservableObject {
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
         request.allHTTPHeaderFields = networkHeaders
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await hlsSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               (200..<300).contains(httpResponse.statusCode)
         else {
