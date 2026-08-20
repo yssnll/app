@@ -32,11 +32,13 @@ open StreamBrowser.xcworkspace
 ```
 
 Il faut ouvrir le fichier `.xcworkspace`, et non plus le `.xcodeproj`. Les flux
-HLS MPEG-TS sont exportés par AVFoundation vers un conteneur MP4 lorsque le codec
-est pris en charge par iOS. Les flux HLS fMP4 restent dans leur playlist locale,
-format natif et fiable pour `AVPlayer`. FFmpegKit n'est plus utilisé afin de
-garder une compilation reproductible : le paquet CocoaPods officiel a été
-retiré de la distribution.
+HLS MPEG-TS sont transcodés par FFmpegKit en H.264/AAC dans un conteneur MP4
+avant d'être ajoutés à la bibliothèque hors ligne. Cette étape prend en charge
+les flux MPEG-2 que `AVPlayer` ne sait pas lire nativement. Les flux HLS fMP4
+restent dans leur playlist locale, format natif et fiable pour `AVPlayer`.
+
+FFmpegKit est installé comme package Swift dans `project.yml`, depuis un fork
+iOS maintenu, car le paquet CocoaPods officiel a été retiré de la distribution.
 
 Dans Xcode, remplacez `com.example.StreamBrowser` par votre propre identifiant de
 bundle et sélectionnez votre équipe Apple. Si vous changez cet identifiant, mettez
