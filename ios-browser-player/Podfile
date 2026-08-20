@@ -1,0 +1,9 @@
+platform :ios, '16.0'
+
+install! 'cocoapods', :disable_input_output_paths => true
+
+target 'StreamBrowser' do
+  # Includes the FFmpeg decoders and encoders needed to transcode MPEG-TS
+  # streams to H.264/AAC MP4 files.
+  pod 'ffmpeg-kit-ios-full', '6.0'
+end
