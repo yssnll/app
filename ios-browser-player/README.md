@@ -6,9 +6,8 @@ Application iOS native en SwiftUI qui permet de :
 - ouvrir les pages dans un navigateur intégré ;
 - coller un lien HLS direct qui se termine par `.m3u8` ;
 - lire le flux avec `AVPlayer` et mémoriser un historique local au format JSON.
-- télécharger les vidéos directes en `.mp4` et convertir automatiquement les
-  flux HLS MPEG-TS en `.mp4` après la fin du téléchargement avec FFmpeg
-  (H.264/AAC).
+- télécharger les vidéos directes en `.mp4` et les flux HLS en fichier vidéo
+  local assemblé, lisible directement par `AVPlayer`.
 
 Le lien HLS doit être collé dans la barre de navigation. Les liens temporaires ne sont
 pas stockés dans le code source.
@@ -24,6 +23,18 @@ cd ios-browser-player
 xcodegen generate
 open StreamBrowser.xcodeproj
 ```
+
+Le projet utilise également FFmpegKit 6.0 via CocoaPods. Après
+`xcodegen generate`, installez la dépendance avec :
+
+```bash
+pod install --repo-update
+open StreamBrowser.xcworkspace
+```
+
+Il faut ouvrir le fichier `.xcworkspace`, et non plus le `.xcodeproj`. Les flux
+HLS MPEG-TS sont transcodés en H.264/AAC dans un conteneur MP4 avant d'être
+ajoutés à la bibliothèque hors ligne.
 
 Dans Xcode, remplacez `com.example.StreamBrowser` par votre propre identifiant de
 bundle et sélectionnez votre équipe Apple. Si vous changez cet identifiant, mettez
