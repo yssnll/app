@@ -94,10 +94,7 @@ struct ContentView: View {
                         BrowserView(
                             url: currentWebURL,
                             onLinkLongPress: beginDownload(for:),
-                            onVideoURLDetected: { videoURL in
-                                currentStreamURL = videoURL
-                                selectedTab = .player
-                            }
+                            onVideoURL: openVideoURL(_:)
                         )
                             .id(currentWebURL.absoluteString)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -269,13 +266,18 @@ struct ContentView: View {
         guard let url = browserStore.resolveInput(input) else { return }
         browserStore.addToHistory(url)
 
-        if browserStore.isHLS(url) {
-            currentStreamURL = url
-            selectedTab = .player
+        if browserStore.isVideo(url) {
+            openVideoURL(url)
         } else {
             currentWebURL = url
             selectedTab = .browser
         }
+    }
+
+    private func openVideoURL(_ url: URL) {
+        currentStreamURL = url
+        browserStore.addToHistory(url)
+        selectedTab = .player
     }
 
     private func beginDownload(for url: URL) {
