@@ -6,7 +6,5 @@ target 'StreamBrowser' do
   # Community-maintained prebuilt FFmpegKit iOS frameworks. The min bundle
   # includes the FFmpeg codecs needed to decode MPEG-2 transport streams.
   pod 'ffmpeg-mobile-min',
-      :git => 'https://github.com/maitrungduc1410/ffmpegkit-ios.git',
-      :tag => 'min/6.0.2',
-      :podspec => 'min/ffmpeg-mobile-min.podspec'
+      :podspec => 'https://raw.githubusercontent.com/maitrungduc1410/ffmpegkit-ios/master/min/ffmpeg-mobile-min.podspec'
 end
