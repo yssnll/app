@@ -204,6 +204,29 @@ final class OfflineStore: NSObject, ObservableObject {
         saveState()
     }
 
+    func rename(_ video: OfflineVideo, to title: String) {
+        let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedTitle.isEmpty,
+              let index = videos.firstIndex(where: { $0.id == video.id })
+        else {
+            return
+        }
+
+        let current = videos[index]
+        videos[index] = OfflineVideo(
+            id: current.id,
+            title: cleanedTitle,
+            sourceURL: current.sourceURL,
+            localPath: current.localPath,
+            qualityLabel: current.qualityLabel,
+            downloadedAt: current.downloadedAt,
+            status: current.status,
+            errorMessage: current.errorMessage,
+            taskIdentifier: current.taskIdentifier
+        )
+        saveState()
+    }
+
     private func startFileDownload(item: OfflineVideo, url: URL) {
         Task {
             do {
