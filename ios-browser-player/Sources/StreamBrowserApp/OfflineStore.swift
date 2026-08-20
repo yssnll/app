@@ -327,6 +327,28 @@ final class OfflineStore: NSObject, ObservableObject {
                 try combinedHandle.close()
             }
 
+            // A downloaded HLS stream without an EXT-X-MAP is normally an
+            // MPEG-TS stream. Do not expose that .ts file as the completed
+            // download: it is not consistently playable by AVPlayer when
+            // opened as a standalone local file. Export it to a real MP4
+            // container first, just like direct video downloads.
+            if parsed.mapURL == nil {
+                let destination = mp4URL(for: item.id)
+                markConverting(item: item, packageURL: combinedURL)
+                try await FFmpegTranscoder.convertTS(
+                    at: combinedURL,
+                    to: destination
+                )
+
+                try? fileManager.removeItem(at: temporaryDirectory)
+                finish(
+                    item: item,
+                    localURL: destination,
+                    note: "Vidéo convertie en MP4 et disponible hors ligne."
+                )
+                return
+            }
+
             let localPlaylist = makeLocalPlaylist(
                 parsed: parsed,
                 hasInitializationMap: parsed.mapURL != nil
@@ -341,27 +363,18 @@ final class OfflineStore: NSObject, ObservableObject {
             let combinedFinalURL = finalDirectory
                 .appendingPathComponent("combined")
                 .appendingPathExtension(combinedExtension)
-            let downloadedURL = offlineDirectory
+            let destination = offlineDirectory
                 .appendingPathComponent(item.id.uuidString)
                 .appendingPathExtension(combinedExtension)
-            try? fileManager.removeItem(at: downloadedURL)
-            try fileManager.moveItem(at: combinedFinalURL, to: downloadedURL)
+            try? fileManager.removeItem(at: destination)
+            try fileManager.moveItem(at: combinedFinalURL, to: destination)
             try? fileManager.removeItem(at: finalDirectory)
 
-            // MPEG-TS is only an intermediate container. Do not mark the
-            // download as completed until it has been transcoded to MP4;
-            // otherwise the Share button exposes a .ts file that many video
-            // players (including Files) cannot open.
-            if combinedExtension == "ts" {
-                markConverting(item: item, packageURL: downloadedURL)
-                await convertPackage(item: item, packageURL: downloadedURL)
-            } else {
-                finish(
-                    item: item,
-                    localURL: downloadedURL,
-                    note: "Vidéo disponible hors ligne."
-                )
-            }
+            finish(
+                item: item,
+                localURL: destination,
+                note: "Vidéo disponible hors ligne."
+            )
         } catch {
             try? fileManager.removeItem(at: temporaryDirectory)
             try? fileManager.removeItem(at: finalDirectory)
@@ -534,38 +547,13 @@ final class OfflineStore: NSObject, ObservableObject {
         try? fileManager.removeItem(at: destinationURL)
 
         let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
-        // Passthrough/highest quality can fail for MPEG-TS streams even when
-        // the asset is playable. Try progressively more compatible presets;
-        // each one forces AVFoundation to produce a real MP4 container.
-        let presets = [
-            AVAssetExportPresetHighestQuality,
-            AVAssetExportPresetMediumQuality,
-            AVAssetExportPresetLowQuality
-        ].filter { compatiblePresets.contains($0) }
+        // Passthrough frequently fails for MPEG-TS -> MP4. Force a real
+        // transcode for downloaded HLS media instead of returning a broken
+        // or empty container.
+        let preset = compatiblePresets.contains(AVAssetExportPresetHighestQuality)
+            ? AVAssetExportPresetHighestQuality
+            : compatiblePresets.first ?? AVAssetExportPresetHighestQuality
 
-        var lastError: Error?
-        for preset in presets {
-            do {
-                try await performMP4Export(
-                    asset: asset,
-                    destinationURL: destinationURL,
-                    preset: preset
-                )
-                return
-            } catch {
-                lastError = error
-                try? fileManager.removeItem(at: destinationURL)
-            }
-        }
-
-        throw lastError ?? DownloadError.mp4ExportUnavailable
-    }
-
-    private func performMP4Export(
-        asset: AVAsset,
-        destinationURL: URL,
-        preset: String
-    ) async throws {
         guard let exporter = AVAssetExportSession(asset: asset, presetName: preset),
               exporter.supportedFileTypes.contains(.mp4)
         else {
@@ -582,18 +570,8 @@ final class OfflineStore: NSObject, ObservableObject {
                 case .completed:
                     continuation.resume()
                 case .failed, .cancelled:
-                    let exportError = exporter.error as NSError?
-                    let details = [
-                        exportError?.localizedDescription,
-                        exportError?.localizedFailureReason,
-                        exportError?.localizedRecoverySuggestion
-                    ]
-                    .compactMap { $0 }
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " — ")
-                    let message = details.isEmpty
-                        ? DownloadError.exportFailed.localizedDescription
-                        : details
+                    let message = exporter.error?.localizedDescription
+                        ?? DownloadError.exportFailed.localizedDescription
                     continuation.resume(
                         throwing: NSError(
                             domain: "StreamBrowser.Download",
@@ -645,11 +623,13 @@ final class OfflineStore: NSObject, ObservableObject {
             try? fileManager.removeItem(at: packageURL)
             finish(item: item, localURL: destination)
         } catch {
-            // The source is an intermediate MPEG-TS file and must not be
-            // exposed as a successful download. Keep the failure visible so
-            // the user does not end up with a file that cannot be opened.
-            try? fileManager.removeItem(at: packageURL)
-            fail(item: item, error: error)
+            // The package itself remains playable with AVPlayer. Conversion is
+            // optional and must not make an otherwise complete download fail.
+            finish(
+                item: item,
+                localURL: packageURL,
+                note: "Vidéo disponible hors ligne (format HLS local)."
+            )
         }
     }
 
