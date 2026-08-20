@@ -1,15 +1,28 @@
 import AVKit
 import AVFoundation
 import SwiftUI
+import UIKit
 
 struct HLSPlayerView: View {
     let url: URL
+    let initialPosition: Double
+    let onPositionChanged: (Double) -> Void
+    let onPlaybackStarted: () -> Void
     @State private var player: AVPlayer
     @State private var isFullScreen = false
     @State private var controlsVisible = true
+    @State private var timeObserver: Any?
 
-    init(url: URL) {
+    init(
+        url: URL,
+        initialPosition: Double = 0,
+        onPositionChanged: @escaping (Double) -> Void = { _ in },
+        onPlaybackStarted: @escaping () -> Void = {}
+    ) {
         self.url = url
+        self.initialPosition = initialPosition
+        self.onPositionChanged = onPositionChanged
+        self.onPlaybackStarted = onPlaybackStarted
         _player = State(initialValue: AVPlayer(url: url))
     }
 
@@ -45,11 +58,27 @@ struct HLSPlayerView: View {
         }
         .onAppear {
             configureAudioSession()
+            if initialPosition > 0 {
+                player.seek(
+                    to: CMTime(seconds: initialPosition, preferredTimescale: 600)
+                )
+            }
+            installTimeObserver()
             player.play()
+            onPlaybackStarted()
             hideControlsSoon()
         }
         .onDisappear {
+            saveCurrentPosition()
+            removeTimeObserver()
             player.pause()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIApplication.didEnterBackgroundNotification
+            )
+        ) { _ in
+            saveCurrentPosition()
         }
         .fullScreenCover(isPresented: $isFullScreen) {
             ZStack(alignment: .topTrailing) {
@@ -115,6 +144,30 @@ struct HLSPlayerView: View {
             try audioSession.setActive(true)
         } catch {
             // La vidéo reste lisible même si iOS refuse l'activation audio.
+        }
+    }
+
+    private func installTimeObserver() {
+        guard timeObserver == nil else { return }
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 2, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            guard time.isNumeric else { return }
+            onPositionChanged(max(0, time.seconds))
+        }
+    }
+
+    private func saveCurrentPosition() {
+        let time = player.currentTime()
+        guard time.isNumeric else { return }
+        onPositionChanged(max(0, time.seconds))
+    }
+
+    private func removeTimeObserver() {
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
         }
     }
 }
