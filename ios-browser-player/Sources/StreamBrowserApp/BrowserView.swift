@@ -206,15 +206,23 @@ struct BrowserView: UIViewRepresentable {
                     window.location.href = new URL(value, document.baseURI).href;
                     return null;
                 }
-                // Respecter le second argument de window.open. Le site
-                // utilise notamment window.open(url, '_self') pour ses
-                // boutons internes ; le forcer vers _blank transformait ces
-                // boutons en faux onglets publicitaires.
-                return originalWindowOpen(
-                    value || 'about:blank',
-                    target || '_blank',
-                    features
-                );
+                const destination = new URL(value || 'about:blank', document.baseURI).href;
+                const requestedTarget = String(target || '_blank').toLowerCase();
+
+                // Anime-Sama utilise window.open(url, '_self') pour ses
+                // boutons internes. Une navigation explicite évite que
+                // WKWebView la classe comme une popup scriptée et l'annule.
+                if (requestedTarget === '_self'
+                    || requestedTarget === '_parent'
+                    || requestedTarget === '_top') {
+                    window.location.href = destination;
+                    return null;
+                }
+
+                // Les ouvertures _blank provenant de scripts sont les
+                // popups publicitaires. Les vrais liens _blank passent par
+                // la navigation native après un clic utilisateur.
+                return null;
             };
         } catch (_) {}
 
