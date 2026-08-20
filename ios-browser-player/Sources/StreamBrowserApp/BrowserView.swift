@@ -234,7 +234,7 @@ struct BrowserView: UIViewRepresentable {
 
             return candidates
                 .filter((value) => typeof value === 'string' && value.length > 0)
-                .find((value) => /(?:\.m3u8(?:[?#]|$)|\.mp4(?:[?#]|$))/i.test(value));
+                .find((value) => /(?:\\.m3u8(?:[?#]|$)|\\.mp4(?:[?#]|$))/i.test(value));
         };
 
         const sendVideoSource = (target) => {
